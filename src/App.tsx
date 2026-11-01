@@ -1,0 +1,146 @@
+import { useEffect, useState } from 'react';
+import { AlertCircle, Check, Grid3x3, Keyboard, Loader2, Moon, Plus, Settings2, Sun, Sunrise, Unplug } from 'lucide-react';
+import { X87, webHidSupported } from './hid/keyboard';
+import { LightingPanel } from './components/LightingPanel';
+import { PerKeyPanel } from './components/PerKeyPanel';
+import { RemapPanel } from './components/RemapPanel';
+import { SettingsPanel } from './components/SettingsPanel';
+import { useBusy } from './components/useBusy';
+import './app.css';
+
+type Tab = 'lighting' | 'perkey' | 'remap' | 'settings';
+
+const NAV = [
+  { id: 'lighting', label: 'Lighting', icon: Sunrise },
+  { id: 'perkey', label: 'Per-key RGB', icon: Grid3x3 },
+  { id: 'remap', label: 'Key remap', icon: Keyboard },
+  { id: 'settings', label: 'Settings', icon: Settings2 },
+] as const;
+
+function useTheme() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(
+    () => (localStorage.getItem('theme') as 'light' | 'dark') ?? 'light',
+  );
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+  return [theme, () => setTheme((t) => (t === 'light' ? 'dark' : 'light'))] as const;
+}
+
+export default function App() {
+  const [kb, setKb] = useState<X87 | null>(null);
+  const [tab, setTab] = useState<Tab>('lighting');
+  const [epoch, setEpoch] = useState(0);
+  const [theme, toggleTheme] = useTheme();
+  const { busy, error, done, setError, run } = useBusy();
+
+  useEffect(() => {
+    if (!webHidSupported) return;
+    X87.reconnect()
+      .then((k) => k && setKb(k))
+      .catch(() => undefined);
+    const onDisconnect = (e: HIDConnectionEvent) => setKb((cur) => (cur && cur.device === e.device ? null : cur));
+    navigator.hid.addEventListener('disconnect', onDisconnect);
+    return () => navigator.hid.removeEventListener('disconnect', onDisconnect);
+  }, []);
+
+  const connect = async () => {
+    setError(null);
+    try {
+      const k = await X87.request();
+      if (k) setKb(k);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const disconnect = async () => {
+    await kb?.close();
+    setKb(null);
+  };
+
+  return (
+    <>
+      <header className="topbar">
+        <div className="logo">
+          <Keyboard size={20} /> ATTACK SHARK
+        </div>
+        <span className="spacer" />
+        {kb && (
+          <div className="device-pill">
+            <span className="conn-dot" />
+            X87
+            <span className="tag">{kb.connection === 'wired' ? 'USB' : '2.4G'}</span>
+            <button className="icon-btn" onClick={disconnect} title="Disconnect">
+              <Unplug size={16} />
+            </button>
+          </div>
+        )}
+        <button className="icon-btn" onClick={toggleTheme} title="Toggle theme">
+          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+        </button>
+      </header>
+
+      {!kb && (
+        <div className="empty" style={{ minHeight: 'calc(100vh - 56px)' }}>
+          <img className="empty-img" src="/keyimg.png" alt="" />
+          {webHidSupported ? (
+            <>
+              <button className="btn ink lg" onClick={connect}>
+                <Plus size={16} /> Connect device
+              </button>
+              <h2>Connect your X87</h2>
+              <p>Use the USB cable or the 2.4G receiver. Bluetooth mode can’t be configured.</p>
+              <p className="hint">Close the vendor app (OemDrv.exe) first; it holds the same interface.</p>
+            </>
+          ) : (
+            <>
+              <h2>Browser not supported</h2>
+              <p>WebHID is needed. Open this page in Chrome, Edge or Opera on desktop.</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {kb && (
+        <div className="layout">
+          <nav className="sidenav">
+            {NAV.map(({ id, label, icon: Icon }) => (
+              <button key={id} className={tab === id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(id)}>
+                <Icon size={18} /> {label}
+              </button>
+            ))}
+            <div className="nav-foot">
+              Changes in Lighting apply instantly. Per-key and remap changes are saved with the bar at the bottom.
+            </div>
+          </nav>
+          <main className="content" key={epoch}>
+            {tab === 'lighting' && <LightingPanel kb={kb} run={run} />}
+            {tab === 'perkey' && <PerKeyPanel kb={kb} run={run} />}
+            {tab === 'remap' && <RemapPanel kb={kb} run={run} />}
+            {tab === 'settings' && <SettingsPanel kb={kb} run={run} onReset={() => setEpoch((e) => e + 1)} />}
+          </main>
+        </div>
+      )}
+
+      <div className="toasts">
+        {busy && (
+          <div className="toast">
+            <Loader2 size={16} className="spin" /> {busy}…
+          </div>
+        )}
+        {!busy && done && (
+          <div className="toast">
+            <Check size={16} color="var(--ok)" /> {done}
+          </div>
+        )}
+        {error && (
+          <div className="toast error" onClick={() => setError(null)} title="Dismiss">
+            <AlertCircle size={16} /> {error}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
