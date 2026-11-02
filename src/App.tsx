@@ -5,6 +5,9 @@ import { LightingPanel } from './components/LightingPanel';
 import { PerKeyPanel } from './components/PerKeyPanel';
 import { RemapPanel } from './components/RemapPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { AppearancePopover } from './components/AppearanceControls';
+import { KeyboardSvg } from './components/KeyboardGraphic';
+import { AppearanceProvider } from './theme/AppearanceContext';
 import { useBusy } from './components/useBusy';
 import './app.css';
 
@@ -28,7 +31,7 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === 'light' ? 'dark' : 'light'))] as const;
 }
 
-export default function App() {
+function AppContent() {
   const [kb, setKb] = useState<X87 | null>(null);
   const [tab, setTab] = useState<Tab>('lighting');
   const [epoch, setEpoch] = useState(0);
@@ -88,6 +91,7 @@ export default function App() {
             </button>
           </div>
         )}
+        <AppearancePopover />
         <button className="icon-btn" onClick={toggleTheme} title="Toggle theme">
           {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
         </button>
@@ -95,7 +99,7 @@ export default function App() {
 
       {!kb && (
         <div className="empty" style={{ minHeight: 'calc(100vh - 56px)' }}>
-          <img className="empty-img" src="/keyimg.png" alt="" />
+          <KeyboardSvg className="empty-img" />
           {webHidSupported ? (
             <>
               <button className="btn ink lg" onClick={connect}>
@@ -161,5 +165,13 @@ export default function App() {
         )}
       </div>
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <AppearanceProvider>
+      <AppContent />
+    </AppearanceProvider>
   );
 }

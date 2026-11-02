@@ -3,6 +3,7 @@ import { AlertTriangle, RotateCcw } from 'lucide-react';
 import type { X87 } from '../hid/keyboard';
 import { DEBOUNCE_APP_MAX, LedConfig, SLEEP_PRESETS, TAP_MAX } from '../hid/protocol';
 import type { Run } from './useBusy';
+import { AppearanceSettingsCard } from './AppearanceControls';
 
 interface Props {
   kb: X87;
@@ -122,6 +123,8 @@ export function SettingsPanel({ kb, run, onReset }: Props) {
           ))}
         </div>
       </section>
+
+      <AppearanceSettingsCard />
 
       <section className="card danger-card">
         <div className="setting-row">

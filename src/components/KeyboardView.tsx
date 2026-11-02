@@ -1,4 +1,6 @@
 import { IMAGE_HEIGHT, IMAGE_WIDTH, KEYS, type KeyDef } from '../hid/layout';
+import { KeyboardGraphic } from './KeyboardGraphic';
+import { useAppearance } from '../theme/AppearanceContext';
 
 interface Props {
   selected?: Set<number>;
@@ -12,13 +14,15 @@ interface Props {
 }
 
 export function KeyboardView({ selected, onKeyClick, onKeyEnter, fill, badge, changed }: Props) {
+  const { palette } = useAppearance();
+
   return (
     <svg
       viewBox={`0 0 ${IMAGE_WIDTH} ${IMAGE_HEIGHT}`}
       className={onKeyClick ? 'kb-svg' : 'kb-svg kb-static'}
       onMouseDown={(e) => e.preventDefault()}
     >
-      <image href="/keyimg.png" width={IMAGE_WIDTH} height={IMAGE_HEIGHT} />
+      <KeyboardGraphic palette={palette} idPrefix="kb-view" />
       {KEYS.map((k) => {
         const w = k.x2 - k.x1;
         const h = k.y2 - k.y1;

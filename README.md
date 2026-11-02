@@ -14,6 +14,11 @@ library and full protocol notes are in
 - **Per-key RGB**: paint keys on a picture of the keyboard (click, drag, select, eyedropper), quick selections (WASD, arrows, F-row…), then apply and switch to custom mode.
 - **Key remap**: 4 layers; keyboard keys with modifiers, media keys, mouse buttons, Fn, or disable. Changed keys are labelled, with save/discard.
 - **Settings**: Tap on/off and sensitivity, wireless sleep timeout, debounce (with an extended range beyond the vendor app's 5 stages), factory reset.
+- **Keyboard Appearance**: Choose between factory colorways or customize your own palette:
+  - **Charcoal & Yellow** (Default black): Stealth dark chassis, medium slate alphas, deep modifiers, and vivid yellow accents.
+  - **Retro Cream**: Warm vintage cream chassis, dark charcoal alphas, cream modifiers, and tan accents.
+  - **Custom Palette**: Customize shell, alphas, modifiers, accents, and legends with real-time contrast auto-tuning.
+  - Persisted automatically in `localStorage`; available disconnected via the topbar palette popover or connected in Settings. Pure visual styling (never writes to HID hardware).
 - Light and dark theme.
 
 ## Requirements
@@ -56,7 +61,10 @@ src/hid/keyboard.ts    high-level X87 API
 src/hid/layout.ts      key rectangles + LED indices (from the vendor KB.ini)
 src/hid/usages.ts      HID keyboard / consumer usage names
 src/components/        React UI
-scripts/               Node self-tests against real hardware
+scripts/               Hardware probes, regression tests, and SVG generator
+public/keyboard.svg    Scalable vector illustration (default black / Charcoal & Yellow, matching the 87 hit targets)
+public/keyboard-cream.svg  Retro Cream edition vector illustration
+public/keyboard-charcoal.svg Charcoal & Yellow edition vector illustration
 ```
 
 ## Disclaimer
