@@ -1,18 +1,29 @@
-import { useId } from 'react';
-import { IMAGE_HEIGHT, IMAGE_WIDTH, KEYS } from '../hid/layout';
+import React, { useId } from 'react';
+import { IMAGE_HEIGHT, IMAGE_WIDTH, KEYS, type KeyDef } from '../hid/layout';
 import {
   type DerivedKeyboardPalette,
   getKeyType,
   KEYBOARD_LEGENDS,
+  deriveKeyPalette,
 } from '../theme/appearance';
 import { useAppearance } from '../theme/AppearanceContext';
 
-interface KeyboardGraphicProps {
+export interface KeyboardKeyProps {
+  selected?: Set<number>;
+  fill?: (index: number) => string | undefined;
+  label?: (index: number) => string | undefined;
+  keyTitle?: (index: number) => string | undefined;
+  changed?: (index: number) => boolean;
+  onKeyClick?: (key: KeyDef, e: React.MouseEvent) => void;
+  onKeyEnter?: (key: KeyDef, e: React.MouseEvent) => void;
+}
+
+interface KeyboardGraphicProps extends KeyboardKeyProps {
   palette: DerivedKeyboardPalette;
   idPrefix?: string;
 }
 
-export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicProps) {
+export function KeyboardGraphic({ palette, idPrefix = 'kb', selected, fill, label, keyTitle, changed, onKeyClick, onKeyEnter }: KeyboardGraphicProps) {
   return (
     <g id={`${idPrefix}-graphic`}>
       <defs>
@@ -180,7 +191,10 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
           const w = key.x2 - key.x1;
           const h = key.y2 - key.y1;
           const type = getKeyType(key.name);
-          const keyPalette = palette[type];
+          const color = fill?.(key.index);
+          const keyPalette = color ? deriveKeyPalette(color, '#ffffff') : palette[type];
+          const replacement = label?.(key.index);
+          const gradient = color ? `${idPrefix}-paint-${key.index}` : `${idPrefix}-${type}`;
 
           const padX = 2.4;
           const padTop = 1.8;
@@ -190,7 +204,9 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
           const dw = w - padX * 2;
           const dh = h - padTop - padBottom;
 
-          const info = KEYBOARD_LEGENDS[key.name] || { primary: key.name };
+          const info = replacement !== undefined
+            ? { primary: replacement, size: Math.min(8.5, (dw - 5) / Math.max(replacement.length * 0.6, 1)) }
+            : KEYBOARD_LEGENDS[key.name] || { primary: key.name };
           const primary = info.primary;
           const secondary = info.secondary;
           const fontSize = info.size || 8.5;
@@ -199,7 +215,33 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
           const cy = key.y1 + h / 2 - 0.5;
 
           return (
-            <g key={key.index} id={`${idPrefix}-key-${key.index}`}>
+            <g key={key.index} id={`${idPrefix}-key-${key.index}`}
+              className={`kb-key${selected?.has(key.index) ? ' sel' : ''}${changed?.(key.index) ? ' changed' : ''}`}
+              data-key-index={key.index}
+              role={onKeyClick ? 'button' : undefined}
+              aria-label={onKeyClick ? key.name : undefined}
+              tabIndex={onKeyClick ? 0 : undefined}
+              onMouseDown={(e) => { e.preventDefault(); onKeyClick?.(key, e); }}
+              onMouseEnter={(e) => onKeyEnter?.(key, e)}
+              onKeyDown={(e) => {
+                if (onKeyClick && (e.key === 'Enter' || e.key === ' ')) {
+                  e.preventDefault();
+                  e.currentTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                }
+              }}
+            >
+              <title>{keyTitle?.(key.index) ?? (replacement !== undefined ? `${key.name}: ${replacement}` : key.name)}</title>
+              {color && <defs>
+                <linearGradient id={`${gradient}-skirt`} x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor={keyPalette.skirtGradStart} />
+                  <stop offset="100%" stopColor={keyPalette.skirtGradEnd} />
+                </linearGradient>
+                <linearGradient id={`${gradient}-top`} x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor={keyPalette.topGradStart} />
+                  <stop offset="50%" stopColor={keyPalette.topGradMid} />
+                  <stop offset="100%" stopColor={keyPalette.topGradEnd} />
+                </linearGradient>
+              </defs>}
               {/* Plate switch recess shadow */}
               <rect
                 x={key.x1 + 0.6}
@@ -211,14 +253,15 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
                 opacity={0.52}
               />
 
-              {/* Key outer skirt */}
+              {/* Key outer skirt: selection styling lives on the actual key shape. */}
               <rect
+                className="kb-key-skirt"
                 x={key.x1 + 1.2}
                 y={key.y1 + 1.0}
                 width={w - 2.4}
                 height={h - 2.0}
                 rx={4.5}
-                fill={`url(#${idPrefix}-${type}-skirt)`}
+                fill={`url(#${gradient}-skirt)`}
                 stroke={keyPalette.skirtStroke}
                 strokeWidth={0.6}
               />
@@ -235,13 +278,13 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
               />
 
               {/* Top scoop dish */}
-              <rect
+              <rect className="kb-key-top"
                 x={dx}
                 y={dy}
                 width={dw}
                 height={dh}
                 rx={3.5}
-                fill={`url(#${idPrefix}-${type}-top)`}
+                fill={`url(#${gradient}-top)`}
                 stroke={keyPalette.dishStroke}
                 strokeWidth={0.5}
               />
@@ -259,7 +302,7 @@ export function KeyboardGraphic({ palette, idPrefix = 'kb' }: KeyboardGraphicPro
               />
 
               {/* Tactile homing bump (F and J) */}
-              {(key.name === 'F' || key.name === 'J') && (
+              {replacement === undefined && (key.name === 'F' || key.name === 'J') && (
                 <rect
                   x={cx - 3.2}
                   y={cy + 5.2}

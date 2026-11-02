@@ -1,4 +1,5 @@
 import { createTransport, isConfigDevice, HID_FILTERS, type Transport } from './transport';
+import { decodeMacroBank, encodeMacroBank, MACRO_BANK_SIZE, type MacroDefinition } from './macros';
 import {
   KeyMatrix,
   LAYERS,
@@ -109,7 +110,20 @@ export class X87 {
 
   setLedConfig(c: LedConfig) {
     if (!c.valid) return Promise.reject(new Error('Refusing to write an invalid settings block'));
+    c.settings(c.effectId);
     return this.t.write('ledConfig', 0, c.bytes);
+  }
+
+  /** Read after write; do not treat a successful USB send as proof of settings. */
+  async setLedConfigVerified(c: LedConfig): Promise<LedConfig> {
+    await this.setLedConfig(c);
+    const actual = await this.ledConfig();
+    const wanted = c.settings(c.effectId);
+    const got = actual.settings(actual.effectId);
+    if (actual.effectId !== c.effectId || got.brightness !== wanted.brightness || got.speed !== wanted.speed || got.color !== wanted.color) {
+      throw new Error(`Lighting read-back differs from the requested settings (device effect ${actual.effectId}, brightness ${got.brightness}, speed ${got.speed}, colour ${got.color}). Reload lighting before retrying.`);
+    }
+    return actual;
   }
 
   async rgbTable() {
@@ -129,12 +143,45 @@ export class X87 {
   }
 
   async keyMatrix(layer: number) {
-    if (layer < 0 || layer >= LAYERS) throw new Error('layer must be 0..3');
-    return new KeyMatrix(await this.read('keyMatrix', layer, MATRIX_LEN * 4));
+    if (!Number.isInteger(layer) || layer < 0 || layer >= LAYERS) throw new Error('layer must be 0..3');
+    const bytes = await this.read('keyMatrix', layer, MATRIX_LEN * 4);
+    if (bytes.length !== MATRIX_LEN * 4) throw new Error('Invalid key matrix length');
+    return new KeyMatrix(bytes);
   }
 
   setKeyMatrix(layer: number, m: KeyMatrix) {
+    if (!Number.isInteger(layer) || layer < 0 || layer >= LAYERS) throw new Error('layer must be 0..3');
+    if (m.bytes.length !== MATRIX_LEN * 4) throw new Error('Invalid key matrix length');
     return this.t.write('keyMatrix', layer, m.bytes);
+  }
+
+  /** Read the bank over USB or eight tagged 512-byte receiver pages. */
+  async readMacroBank(): Promise<MacroDefinition[]> {
+    return decodeMacroBank(await this.read('macro', 0, MACRO_BANK_SIZE));
+  }
+
+  /**
+   * Explicitly replace the shared bank, after checking references in all layers.
+   * This is not an atomic firmware transaction. Back up first. Existing slot
+   * numbers are preserved; replacing a slot changes every key referencing it.
+   */
+  async replaceMacroBank(macros: MacroDefinition[], options: { allowEmpty?: boolean } = {}): Promise<{ verified: boolean }> {
+    if (!macros.length && !options.allowEmpty) throw new Error('Empty bank replacement requires explicit allowEmpty');
+    const bytes = encodeMacroBank(macros);
+    for (let layer = 0; layer < LAYERS; layer++) {
+      const matrix = await this.keyMatrix(layer);
+      for (let offset = 0; offset < matrix.bytes.length; offset += 4) {
+        if (matrix.bytes[offset] === 3 && matrix.bytes[offset + 3] >= macros.length) {
+          throw new Error(`Layer ${layer + 1} still references macro slot ${matrix.bytes[offset + 3] + 1}. Import/preserve the existing bank before replacing it.`);
+        }
+      }
+    }
+    await this.t.writeMacroBank(bytes);
+    const actual = await this.read('macro', 0, MACRO_BANK_SIZE);
+    if (actual.length !== bytes.length || actual.some((b, i) => b !== bytes[i])) {
+      throw new Error('Macro bank verification failed. Do not assign a key; restore your backup.');
+    }
+    return { verified: true };
   }
 
   /** Restore factory settings (lighting, key map, options). */

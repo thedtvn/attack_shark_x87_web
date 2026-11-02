@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { isConfigDevice, parseWiredReply, createTransport } from '../src/hid/transport';
+import { isConfigDevice, parseWiredReply, createTransport, WirelessReadStream } from '../src/hid/transport';
 import { LedConfig } from '../src/hid/protocol';
 
 function descriptor(size: number, id = 6) {
@@ -64,4 +64,51 @@ test('truncated wireless replies fail rather than zero-filling config', async ()
   await assert.rejects(transport.read('ledConfig', 0, 128), /Truncated/);
   transport.dispose();
   assert.equal(listener, undefined);
+});
+
+function wirelessReply(cmd: number, sub: number, total: number, index: number, size: number) {
+  const r = new Uint8Array(20);
+  r.set([19, cmd, total, index, (sub << 4) | size]);
+  r.fill(index & 255, 5, 5 + size);
+  return r;
+}
+test('observed receiver matrix 504 and RGB490-byte streams pad only unused tails', () => {
+  for (const [cmd, actual, requested, minimum] of [[0x41,504,512,504],[0x49,490,512,420],[0x42,378,378,378]]) {
+    const stream = new WirelessReadStream(cmd, 0, requested, minimum);
+    const total = Math.ceil(actual / 14);
+    let result: Uint8Array | null = null;
+    for (let index = 0; index < total; index++) result = stream.push(wirelessReply(cmd,0,total,index,Math.min(14,actual-index*14)));
+    assert.equal(result?.length, requested);
+    assert.ok(result!.slice(actual).every(b=>b===0));
+  }
+});
+test('wireless assembly ignores duplicate/order/stale page but never missing or conflicting data', () => {
+  const stream = new WirelessReadStream(0x43, 1, 512, 512);
+  assert.equal(stream.push(wirelessReply(0x43,0,37,0,14)),null);
+  assert.equal(stream.push(wirelessReply(0x43,1,37,36,8)),null);
+  for (let index=0;index<35;index++) {
+    const p=wirelessReply(0x43,1,37,index,14);
+    assert.equal(stream.push(p),null);
+    assert.equal(stream.push(p),null);
+  }
+  assert.equal(stream.push(wirelessReply(0x43,1,37,35,14))?.length,512);
+  const conflict=new WirelessReadStream(0x44,0,128,128);
+  const p=wirelessReply(0x44,0,10,0,14);conflict.push(p);p[5]++;
+  assert.throws(()=>conflict.push(p),/Conflicting duplicate/);
+});
+test('wireless macro reads request eight distinct pages without any write command', async () => {
+  let listener: ((e:HIDInputReportEvent)=>void)|undefined;
+  const requests:number[]=[];
+  const device={vendorId:0x3554,productId:0xfa09,collections:[{usagePage:0xff02,usage:2,outputReports:[{reportId:19}]}],
+    addEventListener(_:string,l:typeof listener){listener=l},removeEventListener(){},
+    async sendReport(_:number,data:Uint8Array){
+      assert.equal(data[0],0x43);const page=data[3]>>>4;requests.push(page);
+      for(let index=36;index>=0;index--){
+        const p=wirelessReply(0x43,page,37,index,index===36?8:14);
+        listener?.({reportId:19,data:new DataView(p.buffer,1,19)} as HIDInputReportEvent);
+      }
+    }} as unknown as HIDDevice;
+  const t=createTransport(device);
+  try {const bank=await t.read('macro',0,4096);assert.equal(bank.length,4096);assert.deepEqual(requests,[0,1,2,3,4,5,6,7]);}
+  finally {t.dispose();}
 });

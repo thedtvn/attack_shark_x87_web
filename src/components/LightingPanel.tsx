@@ -79,22 +79,35 @@ export function LightingPanel({ kb, run }: Props) {
   const palette = table.palette(effectId);
   const off = s.brightness === 0;
 
-  const apply = (id: number, next: EffectSettings) => {
-    setEffectId(id);
-    setS(next);
-    run('Applying lighting', async () => {
-      const c = cfg.with(id, next);
-      await kb.setLedConfig(c);
-      setCfg(c);
-    });
+  const apply = async (id: number, next: EffectSettings) => {
+    // Fn shortcuts can change the independent light bar while this tab is open.
+    // Always preserve the latest device bytes, not the cached panel snapshot.
+    const fresh = await kb.ledConfig();
+    const c = fresh.with(id, next);
+    const actual = await kb.setLedConfigVerified(c);
+    setCfg(actual);
+    setEffectId(actual.effectId);
+    setS(actual.settings(actual.effectId));
   };
 
-  const update = (patch: Partial<EffectSettings>) => apply(effectId, { ...s, ...patch });
+  const update = (patch: Partial<EffectSettings>) => run('Applying lighting', () => apply(effectId, { ...s, ...patch }));
 
-  const selectEffect = (id: number) => {
-    const prev = cfg.settings(id);
-    apply(id, { ...prev, brightness: prev.brightness || 3 });
-  };
+  const selectEffect = (id: number) => run('Applying lighting effect', async () => {
+    // Validate the selected slot too: a valid active slot doesn't validate the others.
+    const fresh = await kb.ledConfig();
+    const prev = fresh.settings(id);
+    const actual = await kb.setLedConfigVerified(fresh.with(id, { ...prev, brightness: prev.brightness || 3 }));
+    setCfg(actual);
+    setEffectId(actual.effectId);
+    setS(actual.settings(actual.effectId));
+  });
+
+  const reload = () => run('Reading lighting', async () => {
+    const actual = await kb.ledConfig();
+    setCfg(actual);
+    setEffectId(actual.effectId);
+    setS(actual.settings(actual.effectId));
+  });
 
   const setPaletteColor = (i: number, hex: string) => {
     const t = table.withColor(effectId, i, fromHex(hex));
@@ -112,6 +125,7 @@ export function LightingPanel({ kb, run }: Props) {
           <h2>{def.name}</h2>
           <span className="sub">{off ? 'Backlight off' : `Brightness ${s.brightness} · Speed ${s.speed}`}</span>
           <span className="spacer" />
+          <button className="btn ghost" onClick={reload}>Reload lighting</button>
           <button className="btn ghost" onClick={() => update({ brightness: off ? 3 : 0 })}>
             <Power size={16} /> {off ? 'Turn on' : 'Turn off'}
           </button>

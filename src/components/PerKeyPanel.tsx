@@ -6,6 +6,8 @@ import { CUSTOM_EFFECT_ID, PerKeyColors } from '../hid/protocol';
 import { fromHex, toHex } from './colors';
 import { KeyboardView } from './KeyboardView';
 import type { Run } from './useBusy';
+import { paintColor } from './perKeyPaint';
+import { useUnsavedChanges } from './UnsavedChanges';
 
 interface Props {
   kb: X87;
@@ -53,9 +55,9 @@ export function PerKeyPanel({ kb, run }: Props) {
     return () => window.removeEventListener('mouseup', up);
   }, []);
 
+  const dirty = !!colors && !!saved && colors.bytes.some((v, i) => v !== saved.bytes[i]);
+  const { barRef } = useUnsavedChanges(dirty);
   if (!colors || !saved) return <div className="skeleton" />;
-
-  const dirty = colors.bytes.some((v, i) => v !== saved.bytes[i]);
 
   const pickBrush = (h: string) => {
     setBrush(h);
@@ -66,8 +68,8 @@ export function PerKeyPanel({ kb, run }: Props) {
     if (indices.length) setColors((cur) => cur!.with(indices, fromHex(c)));
   };
 
-  const act = (index: number) => {
-    if (tool === 'paint') paint([index]);
+  const act = (index: number, click = true) => {
+    if (tool === 'paint') setColors((cur) => cur!.with([index], paintColor(cur!.get(index), fromHex(brush), click)));
     else if (tool === 'pick') {
       pickBrush(toHex(colors.get(index)));
       setTool('paint');
@@ -86,7 +88,7 @@ export function PerKeyPanel({ kb, run }: Props) {
       const cfg = await kb.ledConfig();
       if (cfg.effectId !== CUSTOM_EFFECT_ID) {
         const s = cfg.settings(CUSTOM_EFFECT_ID);
-        await kb.setLedConfig(cfg.with(CUSTOM_EFFECT_ID, { ...s, brightness: s.brightness || 4 }));
+        await kb.setLedConfigVerified(cfg.with(CUSTOM_EFFECT_ID, { ...s, brightness: s.brightness || 4 }));
       }
       setSaved(colors);
     });
@@ -99,7 +101,7 @@ export function PerKeyPanel({ kb, run }: Props) {
         <div className="stage-head">
           <h2>Per-key colours</h2>
           <span className="sub">
-            {tool === 'paint' && 'Click or drag across keys to paint'}
+            {tool === 'paint' && 'Click to paint; click the same colour again to turn off. Drag to paint.'}
             {tool === 'select' && `Click keys to select · ${selected.size} selected`}
             {tool === 'pick' && 'Click a key to copy its colour'}
           </span>
@@ -111,7 +113,7 @@ export function PerKeyPanel({ kb, run }: Props) {
             dragging.current = true;
             act(k.index);
           }}
-          onKeyEnter={(k) => dragging.current && tool !== 'pick' && act(k.index)}
+          onKeyEnter={(k) => dragging.current && tool !== 'pick' && act(k.index, false)}
         />
       </section>
 
@@ -191,14 +193,14 @@ export function PerKeyPanel({ kb, run }: Props) {
       </div>
 
       {dirty && (
-        <div className="savebar">
+        <div className="savebar" ref={barRef} tabIndex={-1} role="status" aria-live="polite">
           <span>Unsaved per-key colours</span>
           <span className="spacer" />
           <button className="btn" onClick={() => setColors(saved)}>
             <RotateCcw size={14} /> Discard
           </button>
           <button className="btn primary" onClick={apply}>
-            Apply to keyboard
+            Save
           </button>
         </div>
       )}

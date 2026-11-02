@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, RotateCcw } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 import type { X87 } from '../hid/keyboard';
 import { DEBOUNCE_APP_MAX, LedConfig, SLEEP_PRESETS, TAP_MAX } from '../hid/protocol';
 import type { Run } from './useBusy';
 import { AppearanceSettingsCard } from './AppearanceControls';
+import { usePopup } from './PopupProvider';
 
 interface Props {
   kb: X87;
@@ -16,7 +17,7 @@ const fmtSleep = (s: number) => (s < 60 ? `${s} s` : `${s / 60} min`);
 export function SettingsPanel({ kb, run, onReset }: Props) {
   const [cfg, setCfg] = useState<LedConfig | null>(null);
   const [tapDraft, setTapDraft] = useState(64);
-  const [confirm, setConfirm] = useState(false);
+  const popup = usePopup();
   const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
@@ -132,33 +133,14 @@ export function SettingsPanel({ kb, run, onReset }: Props) {
             <h3>Factory reset</h3>
             <p className="note">Restores lighting, per-key colours, key remaps and these options to defaults.</p>
           </div>
-          {!confirm ? (
-            <button className="btn" onClick={() => setConfirm(true)}>
-              <RotateCcw size={15} /> Reset keyboard
-            </button>
-          ) : (
-            <div className="row">
-              <span className="warn">
-                <AlertTriangle size={15} /> This can’t be undone
-              </span>
-              <button className="btn ghost" onClick={() => setConfirm(false)}>
-                Cancel
-              </button>
-              <button
-                className="btn danger"
-                onClick={() =>
-                  run('Resetting keyboard', async () => {
-                    await kb.factoryReset();
-                    await new Promise((r) => setTimeout(r, 1500));
-                    setConfirm(false);
-                    onReset();
-                  })
-                }
-              >
-                Reset now
-              </button>
-            </div>
-          )}
+          <button className="btn" onClick={async () => {
+            if (!await popup.confirm({ title: 'Reset keyboard?', confirmLabel: 'Reset keyboard', danger: true, message: 'This restores factory settings and may erase custom lighting, key mappings and macros. This cannot be undone. Export a backup first.' })) return;
+            await run('Resetting keyboard', async () => {
+              await kb.factoryReset();
+              await new Promise((r) => setTimeout(r, 1500));
+              onReset();
+            });
+          }}><RotateCcw size={15} /> Reset keyboard</button>
         </div>
       </section>
     </>

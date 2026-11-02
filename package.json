@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "selftest": "tsx scripts/selftest.ts",
     "generate:svg": "tsx scripts/generate-keyboard-svg.ts",
-    "test": "tsx --test scripts/transport.test.ts scripts/appearance.test.ts"
+    "test": "tsx --test scripts/transport.test.ts scripts/appearance.test.ts scripts/macros.test.ts scripts/macroDrafts.test.ts scripts/lighting.test.ts scripts/keyboardView.test.tsx scripts/fnActions.test.ts"
   },
   "dependencies": {
     "lucide-react": "^1.66.0",

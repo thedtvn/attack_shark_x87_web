@@ -12,7 +12,7 @@ export const HID_FILTERS: HIDDeviceFilter[] = [
   { vendorId: VID_WIRELESS, productId: PID_WIRELESS, usagePage: 0xff02, usage: 0x0002 },
 ];
 
-export type Block = 'keyMatrix' | 'ledConfig' | 'perKeyColors' | 'rgbTable';
+export type Block = 'keyMatrix' | 'ledConfig' | 'perKeyColors' | 'rgbTable' | 'macro';
 
 export interface Transport {
   readonly kind: 'wired' | 'wireless';
@@ -21,6 +21,7 @@ export interface Transport {
   write(block: Block, sub: number, data: Uint8Array): Promise<void>;
   /** Factory reset (USB cmd 0x11, 2.4G cmd 0x06; not acknowledged). */
   factoryReset(): Promise<void>;
+  writeMacroBank(data: Uint8Array): Promise<void>;
   dispose(): void;
 }
 
@@ -67,6 +68,7 @@ const WIRED_CMD: Record<Block, number> = {
   ledConfig: 0x04,
   perKeyColors: 0x06,
   rgbTable: 0x0a,
+  macro: 0x05,
 };
 
 const REPORT_ID = 0x06;
@@ -120,7 +122,13 @@ class WiredTransport implements Transport {
   }
 
   write(block: Block, sub: number, data: Uint8Array) {
+    if (block === 'macro') return this.writeMacroBank(data);
     return this.exclusive(() => this.writeData(block, sub, data));
+  }
+
+  writeMacroBank(data: Uint8Array) {
+    if (data.length !== 4096) return Promise.reject(new Error('Macro bank must be 4096 bytes'));
+    return this.exclusive(() => this.writeData('macro', 0, data));
   }
 
   private async writeData(block: Block, sub: number, data: Uint8Array) {
@@ -167,6 +175,7 @@ const WIRELESS_CMD: Record<Block, [set: number, get: number]> = {
   perKeyColors: [0x02, 0x42],
   ledConfig: [0x04, 0x44],
   rgbTable: [0x09, 0x49],
+  macro: [0x03, 0x43],
 };
 
 const W_REPORT_ID = 0x13;
@@ -186,6 +195,47 @@ function wirelessPacket(cmd: number, total: number, index: number, sub: number, 
   for (let i = 0; i < 19; i++) s += p[i];
   p[19] = s & 0xff;
   return p;
+}
+
+/** Strict stream assembly accepts observed physical lengths, never missing packets. */
+export class WirelessReadStream {
+  private parts = new Map<number, Uint8Array>();
+  private total: number | null = null;
+  private cmd: number;
+  private sub: number;
+  private len: number;
+  private minimum: number;
+  constructor(cmd: number, sub: number, len: number, minimum: number) {
+    this.cmd = cmd; this.sub = sub; this.len = len; this.minimum = minimum;
+  }
+  push(r: Uint8Array): Uint8Array | null {
+    if (r.length !== 20) throw new Error('Truncated 2.4G configuration reply');
+    if (r[0] === 0xff) throw new Error('2.4G: device reported failure');
+    if (r[0] !== W_REPORT_ID || r[1] !== this.cmd) return null;
+    if (r[2] & 0x80) throw new Error('Receiver reported checksum error');
+    // Page/layer tag is essential: stale replies must not become another page.
+    if ((r[4] >>> 4) !== this.sub) return null;
+    const total = r[2];
+    const index = r[3];
+    const size = r[4] & 15;
+    if (!total || total > Math.ceil(this.len / W_DATA) || index >= total || size < 1 || size > W_DATA ||
+        (index < total - 1 && size !== W_DATA) || index * W_DATA + size > this.len) {
+      throw new Error('Invalid 2.4G configuration reply length or packet index');
+    }
+    if (this.total !== null && total !== this.total) throw new Error('Inconsistent 2.4G packet count');
+    this.total = total;
+    const data = r.slice(5, 5 + size);
+    const old = this.parts.get(index);
+    if (old && (old.length !== data.length || old.some((b, i) => b !== data[i]))) throw new Error('Conflicting duplicate 2.4G packet');
+    this.parts.set(index, data);
+    if (this.parts.size !== total) return null;
+    const last = this.parts.get(total - 1)!;
+    const actualLen = (total - 1) * W_DATA + last.length;
+    if (actualLen < this.minimum) throw new Error('2.4G stream is shorter than the meaningful block');
+    const out = new Uint8Array(this.len);
+    for (const [i, bytes] of this.parts) out.set(bytes, i * W_DATA);
+    return out;
+  }
 }
 
 class WirelessTransport implements Transport {
@@ -248,19 +298,33 @@ class WirelessTransport implements Transport {
   }
 
   write(block: Block, sub: number, data: Uint8Array) {
+    if (block === 'macro') return this.writeMacroBank(data);
+    return this.exclusive(() => this.writeData(WIRELESS_CMD[block][0], sub, data));
+  }
+
+  private async writeData(cmd: number, sub: number, data: Uint8Array) {
+    const total = Math.ceil(data.length / W_DATA);
+    if (!total || total > 127) throw new Error('Invalid wireless transaction size');
+    this.queue = [];
+    for (let i = 0; i < total; i++) {
+      const pkt = wirelessPacket(cmd, total, i, sub, data.subarray(i * W_DATA, (i + 1) * W_DATA));
+      for (let attempt = 0; ; attempt++) {
+        if (this.closed) throw new Error('Keyboard disconnected');
+        await sleep(15);
+        await this.send(pkt);
+        const res = await this.waitAck(cmd, i);
+        if (res === 'ok') break;
+        if (attempt >= 5) throw new Error(`2.4G write ${res} (cmd 0x${cmd.toString(16)}, packet ${i}). Upload may be partial.`);
+      }
+    }
+  }
+
+  writeMacroBank(data: Uint8Array) {
+    if (data.length !== 4096) return Promise.reject(new Error('Macro bank must be 4096 bytes'));
     return this.exclusive(async () => {
-      const cmd = WIRELESS_CMD[block][0];
-      const total = Math.ceil(data.length / W_DATA);
-      this.queue = [];
-      for (let i = 0; i < total; i++) {
-        const pkt = wirelessPacket(cmd, total, i, sub, data.subarray(i * W_DATA, (i + 1) * W_DATA));
-        for (let attempt = 0; ; attempt++) {
-          await sleep(15);
-          await this.send(pkt);
-          const res = await this.waitAck(cmd, i);
-          if (res === 'ok') break;
-          if (attempt >= 5) throw new Error(`2.4G write ${res} (cmd 0x${cmd.toString(16)}, packet ${i})`);
-        }
+      for (let page = 0; page < 8; page++) {
+        await this.writeData(0x03, page, data.subarray(page * 512, (page + 1) * 512));
+        await sleep(100);
       }
     });
   }
@@ -289,44 +353,42 @@ class WirelessTransport implements Transport {
   read(block: Block, sub: number, len: number) {
     return this.exclusive(async () => {
       const cmd = WIRELESS_CMD[block][1];
-      for (let attempt = 0; attempt < 2; attempt++) {
-        this.queue = [];
-        await this.send(wirelessPacket(cmd, 1, 0, sub));
-        const out = new Uint8Array(len);
-        const seen = new Set<number>();
-        let ok = false;
-        const deadline = Date.now() + 2500;
-        let received = 0;
-        for (;;) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0 || received++ > 256) break;
-          const r = await this.next(Math.min(1500, remaining));
-          if (!r) break;
-          if (r.length !== 20) throw new Error('Truncated 2.4G configuration reply');
-          if (r[0] === 0xff) throw new Error('2.4G: device reported failure');
-          if (r[1] !== cmd) continue;
-          if (r[2] & 0x80) break;
-          const total = r[2] & 0x7f;
-          const index = r[3];
-          const off = index * W_DATA;
-          const size = r[4] & 0x0f;
-          if (total !== Math.ceil(len / W_DATA) || index >= total ||
-              size !== Math.min(W_DATA, len - off)) {
-            throw new Error('Invalid 2.4G configuration reply length or packet index');
-          }
-          if (!seen.has(index)) {
-            seen.add(index);
-            out.set(r.subarray(5, 5 + size), off);
-          }
-          if (seen.size === total) {
-            ok = true;
-            break;
-          }
+      if (block === 'macro') {
+        if (len !== 4096 || sub !== 0) throw new Error('Macro reads require the full 4096-byte bank');
+        const bank = new Uint8Array(4096);
+        for (let page = 0; page < 8; page++) {
+          bank.set(await this.readData(cmd, page, 512, 512), page * 512);
         }
-        if (ok) return out;
-        await sleep(100);
+        return bank;
       }
-      throw new Error('2.4G read timed out (is the keyboard awake?)');
+      // Receiver streams only the physical matrix/planes and part of the
+      // RGB block, not the USB allocation size. Only unused tail is padded.
+      const minimum = block === 'keyMatrix' ? 126 * 4 : block === 'perKeyColors' ? 126 * 3 : block === 'rgbTable' ? 20 * 21 : len;
+      return this.readData(cmd, sub, len, minimum);
     });
+  }
+
+  private async readData(cmd: number, sub: number, len: number, minimum: number): Promise<Uint8Array> {
+    let failure = 'incomplete stream';
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (this.closed) throw new Error('Keyboard disconnected');
+      this.queue = [];
+      const stream = new WirelessReadStream(cmd, sub, len, minimum);
+      await this.send(wirelessPacket(cmd, 1, 0, sub));
+      const deadline = Date.now() + 3000;
+      for (let received = 0; received < 512 && Date.now() < deadline; received++) {
+        const r = await this.next(Math.min(1500, deadline - Date.now()));
+        if (!r) break;
+        try {
+          const result = stream.push(r);
+          if (result) return result;
+        } catch (e) {
+          failure = e instanceof Error ? e.message : String(e);
+          break; // Retry a whole stream; never merge different transactions.
+        }
+      }
+      await sleep(100);
+    }
+    throw new Error(`2.4G read failed (cmd 0x${cmd.toString(16)}, page ${sub}): ${failure}. Wake the keyboard and close other keyboard apps.`);
   }
 }

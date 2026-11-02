@@ -1,22 +1,26 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, Grid3x3, Keyboard, Loader2, Moon, Plus, Settings2, Sun, Sunrise, Unplug } from 'lucide-react';
+import { AlertCircle, Check, Grid3x3, Keyboard, Loader2, Moon, Plus, Settings2, Sun, Sunrise, Unplug, Workflow } from 'lucide-react';
 import { X87, webHidSupported } from './hid/keyboard';
 import { LightingPanel } from './components/LightingPanel';
 import { PerKeyPanel } from './components/PerKeyPanel';
 import { RemapPanel } from './components/RemapPanel';
+import { MacroPanel } from './components/MacroPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { AppearancePopover } from './components/AppearanceControls';
 import { KeyboardSvg } from './components/KeyboardGraphic';
 import { AppearanceProvider } from './theme/AppearanceContext';
 import { useBusy } from './components/useBusy';
+import { PopupProvider } from './components/PopupProvider';
+import { UnsavedChangesProvider, useUnsavedNavigation } from './components/UnsavedChanges';
 import './app.css';
 
-type Tab = 'lighting' | 'perkey' | 'remap' | 'settings';
+type Tab = 'lighting' | 'perkey' | 'remap' | 'macro' | 'settings';
 
 const NAV = [
   { id: 'lighting', label: 'Lighting', icon: Sunrise },
   { id: 'perkey', label: 'Per-key RGB', icon: Grid3x3 },
   { id: 'remap', label: 'Key remap', icon: Keyboard },
+  { id: 'macro', label: 'Macros', icon: Workflow },
   { id: 'settings', label: 'Settings', icon: Settings2 },
 ] as const;
 
@@ -32,6 +36,7 @@ function useTheme() {
 }
 
 function AppContent() {
+  const allowLeave = useUnsavedNavigation();
   const [kb, setKb] = useState<X87 | null>(null);
   const [tab, setTab] = useState<Tab>('lighting');
   const [epoch, setEpoch] = useState(0);
@@ -53,6 +58,7 @@ function AppContent() {
   }, []);
 
   const connect = async () => {
+    if (!allowLeave()) return;
     setError(null);
     try {
       const k = await X87.request();
@@ -67,6 +73,7 @@ function AppContent() {
   };
 
   const disconnect = async () => {
+    if (!allowLeave()) return;
     await kb?.close();
     setKb(null);
   };
@@ -122,7 +129,7 @@ function AppContent() {
         <div className="layout">
           <nav className="sidenav">
             {NAV.map(({ id, label, icon: Icon }) => (
-              <button key={id} className={tab === id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(id)}>
+              <button key={id} className={tab === id ? 'nav-item active' : 'nav-item'} onClick={() => { if (id === tab || allowLeave()) setTab(id); }}>
                 <Icon size={18} /> {label}
               </button>
             ))}
@@ -131,10 +138,11 @@ function AppContent() {
             </div>
           </nav>
           <main className="content" key={epoch}>
-            <fieldset disabled={!!busy || !!error} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: 'contents' }}>
+            <fieldset disabled={!!busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: 'contents' }}>
             {tab === 'lighting' && <LightingPanel kb={kb} run={run} />}
             {tab === 'perkey' && <PerKeyPanel kb={kb} run={run} />}
             {tab === 'remap' && <RemapPanel kb={kb} run={run} />}
+            {tab === 'macro' && <MacroPanel kb={kb} run={run} />}
             {tab === 'settings' && <SettingsPanel kb={kb} run={run} onReset={() => setEpoch((e) => e + 1)} />}
             </fieldset>
           </main>
@@ -171,7 +179,7 @@ function AppContent() {
 export default function App() {
   return (
     <AppearanceProvider>
-      <AppContent />
+      <PopupProvider><UnsavedChangesProvider><AppContent /></UnsavedChangesProvider></PopupProvider>
     </AppearanceProvider>
   );
 }

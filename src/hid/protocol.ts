@@ -1,5 +1,6 @@
 // Data blocks shared by both transports (see PROTOCOL.md in the Rust lib).
 import { LED_SLOTS } from './layout';
+import { encodeMacroBinding, decodeMacroBinding, type MacroRepeat } from './macros';
 
 export type Rgb = [number, number, number];
 
@@ -79,8 +80,14 @@ export class LedConfig {
   }
 
   settings(effectId: number): EffectSettings {
-    const o = OFF_SLOTS + LedConfig.slot(effectId) * 2;
-    return { brightness: this.bytes[o], speed: this.bytes[o + 1] >> 4, color: this.bytes[o + 1] & 0x0f };
+    const slot = LedConfig.slot(effectId);
+    if (slot < 0 || this.bytes.length !== LED_CONFIG_LEN) throw new Error('Invalid lighting effect or settings block');
+    const o = OFF_SLOTS + slot * 2;
+    const settings = { brightness: this.bytes[o], speed: this.bytes[o + 1] >> 4, color: this.bytes[o + 1] & 0x0f };
+    if (settings.brightness > MAX_LEVEL || settings.speed > MAX_LEVEL || settings.color > COLOR_RANDOM) {
+      throw new Error(`Stored settings for ${EFFECTS[slot].name} are outside the supported range (brightness ${settings.brightness}, speed ${settings.speed}, colour ${settings.color}). Expected brightness/speed 0–4 and colour 0–7. No lighting change was made; reload settings in the vendor app and reconnect.`);
+    }
+    return settings;
   }
 
   /** Debounce stage, 1-based (stored as stage - 1 at 0x03). */
@@ -107,6 +114,9 @@ export class LedConfig {
   }
 
   with(effectId: number, s: EffectSettings): LedConfig {
+    if (!this.valid || LedConfig.slot(effectId) < 0 || !Number.isInteger(s.brightness) || s.brightness < 0 || s.brightness > MAX_LEVEL || !Number.isInteger(s.speed) || s.speed < 0 || s.speed > MAX_LEVEL || !Number.isInteger(s.color) || s.color < 0 || s.color > COLOR_RANDOM) {
+      throw new Error('Invalid lighting settings: brightness/speed must be 0–4 and colour 0–7');
+    }
     const b = new Uint8Array(this.bytes);
     b[OFF_EFFECT] = effectId;
     b[OFF_PERKEY] = effectId === CUSTOM_EFFECT_ID ? 1 : 0;
@@ -189,12 +199,17 @@ export type KeyAction =
   | { kind: 'consumer'; usage: number }
   | { kind: 'mouse'; button: number }
   | { kind: 'fn' }
+  | { kind: 'fn2' }
+  | { kind: 'macro'; slot: number; repeat: MacroRepeat }
   | { kind: 'raw'; value: number };
 
 export function decodeAction(b: Uint8Array): KeyAction {
   const [b0, b1, b2, b3] = b;
+  const macro = decodeMacroBinding(b);
+  if (macro) return { kind: 'macro', ...macro };
   if (!b0 && !b1 && !b2 && !b3) return { kind: 'none' };
   if (b0 === 0x0d && !b1 && !b2 && !b3) return { kind: 'fn' };
+  if (b0 === 0x0d && b1 === 1 && !b2 && !b3) return { kind: 'fn2' };
   if (b0 === 0x00) return { kind: 'key', modifiers: b1, usage: b3, usage2: b2 };
   if (b0 === 0x02 && b1 === 0) return { kind: 'consumer', usage: (b2 << 8) | b3 };
   if (b0 === 0x01 && b2 === 0x01 && b3 === 0) return { kind: 'mouse', button: b1 };
@@ -213,6 +228,10 @@ export function encodeAction(a: KeyAction): Uint8Array {
       return Uint8Array.of(1, a.button, 1, 0);
     case 'fn':
       return Uint8Array.of(0x0d, 0, 0, 0);
+    case 'fn2':
+      return Uint8Array.of(0x0d, 1, 0, 0);
+    case 'macro':
+      return encodeMacroBinding(a.slot, a.repeat);
     case 'raw':
       return Uint8Array.of(a.value & 0xff, (a.value >> 8) & 0xff, (a.value >> 16) & 0xff, a.value >>> 24);
   }

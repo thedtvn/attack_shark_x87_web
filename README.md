@@ -14,6 +14,7 @@ library and full protocol notes are in
 - **Per-key RGB**: paint keys on a picture of the keyboard (click, drag, select, eyedropper), quick selections (WASD, arrows, F-row…), then apply and switch to custom mode.
 - **Key remap**: 4 layers; keyboard keys with modifiers, media keys, mouse buttons, Fn, or disable. Changed keys are labelled, with save/discard.
 - **Settings**: Tap on/off and sensitivity, wireless sleep timeout, debounce (with an extended range beyond the vendor app's 5 stages), factory reset.
+- **Macros (experimental)**: automatically read the bank over USB, edit sequences in memory, then Save or Discard. Repeat settings are assigned in Key remap. See the safety notes below; playback has not yet been verified on hardware.
 - **Keyboard Appearance**: Choose between factory colorways or customize your own palette:
   - **Charcoal & Yellow** (Default black): Stealth dark chassis, medium slate alphas, deep modifiers, and vivid yellow accents.
   - **Retro Cream**: Warm vintage cream chassis, dark charcoal alphas, cream modifiers, and tan accents.
@@ -76,3 +77,60 @@ factory reset if anything goes wrong.
 ## License
 
 [MIT](LICENSE) © 2026 The DT
+
+## Controller actions and Fn layers
+
+**Key remap → Controller** assigns the documented X87 connection, lighting,
+battery, reset and media shortcuts, plus separate **FN** and **FN2** layer keys.
+The key SVG labels follow the actual stored action, not just its factory key
+position. Fn + 1/2/3 selects Bluetooth channels; Fn + 4 selects the 2.4 GHz
+receiver. Holding these shortcuts pairs them. Physical mode-switch position
+still applies. Unknown actions remain preserved, not guessed.
+
+FN2 encodes as `0D 01 00 00`; FN encodes as `0D 00 00 00`, from the vendor
+encoder in Ghidra. The supplied `KB.ini` defines FN1 factory shortcuts and
+leaves FN2 and Tap defaults empty. Changing layers does not write settings.
+Controller remapping and hold behavior are not yet hardware-validated. Save
+requires extra confirmation for new connection/reset bindings. Selecting a
+controller action only edits a draft; it never intentionally executes it.
+
+## Experimental macros
+
+Macros use a shared 4096-byte keyboard bank. Uploading it is explicit and can
+change **every key referencing the same slots on any layer**. Opening Macros
+reads the keyboard's bank automatically over USB or experimental 2.4G pages. Edits exist only in memory;
+there is no local-draft persistence or fallback. Export a backup before saving.
+
+The UI/API support keyboard press/release, mouse buttons/movement/wheel,
+20-bit millisecond intervals, and counted or indefinite repeat bindings.
+Names are limited to 30 UTF-16 code units; 32 slots is a conservative client
+limit, not a measured firmware maximum. The two indefinite repeat modes are
+experimental. The protocol comes from Ghidra analysis, not an on-device macro
+playback test.
+
+- USB can import/read the bank and compares uploads with a full read-back.
+- 2.4G macro read/write uses eight tagged 512-byte pages (`43` read / `03`
+  write), confirmed in Ghidra and verified on hardware (write, byte-identical
+  read-back, restore). Playback is not yet validated. A save takes ~20 s over
+  2.4G. Backup/read-back must complete or the operation fails.
+- Existing references on all layers are checked before upload. References to
+  slots missing in the replacement block the upload.
+- The Macros page only edits/uploads the bank; it never writes key bindings.
+  Upload first, then assign a slot exclusively in **Key remap → Macro**.
+- In the web editor, every upload first reads and saves the previous decoded bank
+  to browser storage. Read/storage failure aborts before writing. Use **Export
+  bank backup** to keep an external JSON copy; it does not include key bindings.
+- JSON imports replace the in-memory editor in file order after confirmation;
+  they do not write to the keyboard until **Save**. Invalid data is rejected.
+- Unsaved macro, keymap and per-key colour edits block app navigation and focus/
+  shake the **Discard / Save** bar. Browser close/reload uses the native warning;
+  leaving anyway loses edits. No unsaved changes are stored locally.
+- **Discard** restores the last keyboard snapshot. The last macro can be deleted
+  and the empty bank saved explicitly, but references on every layer must first
+  be removed in Key remap. Removing earlier slots shifts later slot numbers.
+- Uploads are not atomic; a disconnect may leave a partial bank. Keep backups.
+- Browser recording, if used, captures only events in the explicit recording
+  area; the page cannot monitor keys system-wide like the native vendor app.
+
+`npm test` includes macro byte fixtures, directory bounds, repeat modes and
+wireless 512-byte page numbering. These tests use mocks, not your keyboard.
