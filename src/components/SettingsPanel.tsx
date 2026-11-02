@@ -54,13 +54,13 @@ export function SettingsPanel({ kb, run, onReset }: Props) {
         <div className="control" style={{ opacity: cfg.tap ? 1 : 0.4 }}>
           <div className="control-head">
             <span>Sensitivity</span>
-            <span className="val">{cfg.tap || tapDraft}</span>
+            <span className="val">{tapDraft}</span>
           </div>
           <input
             type="range"
             min={1}
             max={TAP_MAX}
-            value={cfg.tap || tapDraft}
+            value={tapDraft}
             disabled={!cfg.tap}
             onChange={(e) => setTapDraft(+e.target.value)}
             onPointerUp={() => cfg.tap && save({ tap: tapDraft }, 'Saving tap sensitivity')}

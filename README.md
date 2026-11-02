@@ -37,8 +37,15 @@ the dongle). After the first time, the page reconnects automatically.
 ### Hardware self-test (Node)
 
 `npm run selftest` runs the same driver code from Node against the real
-keyboard via `node-hid`. It reads the config and key map, and writes the config
-back unchanged.
+keyboard via `node-hid`. It reads the config and key map; writes are disabled
+unless you explicitly pass `--write-back`. Close all other keyboard apps first.
+Run `npm test` for hardware-free regression tests (USB report framing, Neon
+stream settings, two-minute sleep encoding, and transaction serialization).
+
+USB has several vendor collections. The browser must grant the collection
+with feature report 6 (519 data bytes), not the smaller vendor interfaces.
+If only the receiver was previously granted, reconnect using **Connect device**
+and grant the USB keyboard too; a page cannot grant USB access silently.
 
 ## Project layout
 

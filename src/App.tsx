@@ -37,19 +37,27 @@ export default function App() {
 
   useEffect(() => {
     if (!webHidSupported) return;
+    let active = true;
     X87.reconnect()
-      .then((k) => k && setKb(k))
-      .catch(() => undefined);
+      .then((k) => active && k && setKb(k))
+      .catch((e) => active && setError(e instanceof Error ? e.message : String(e)));
     const onDisconnect = (e: HIDConnectionEvent) => setKb((cur) => (cur && cur.device === e.device ? null : cur));
     navigator.hid.addEventListener('disconnect', onDisconnect);
-    return () => navigator.hid.removeEventListener('disconnect', onDisconnect);
+    return () => {
+      active = false;
+      navigator.hid.removeEventListener('disconnect', onDisconnect);
+    };
   }, []);
 
   const connect = async () => {
     setError(null);
     try {
       const k = await X87.request();
-      if (k) setKb(k);
+      if (k) {
+        if (kb && kb !== k) await kb.close();
+        setKb(k);
+        setEpoch((n) => n + 1);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -72,6 +80,9 @@ export default function App() {
             <span className="conn-dot" />
             X87
             <span className="tag">{kb.connection === 'wired' ? 'USB' : '2.4G'}</span>
+            <button className="icon-btn" onClick={connect} title="Choose device" aria-label="Choose device" disabled={!!busy}>
+              <Plus size={16} />
+            </button>
             <button className="icon-btn" onClick={disconnect} title="Disconnect">
               <Unplug size={16} />
             </button>
@@ -116,10 +127,12 @@ export default function App() {
             </div>
           </nav>
           <main className="content" key={epoch}>
+            <fieldset disabled={!!busy || !!error} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: 'contents' }}>
             {tab === 'lighting' && <LightingPanel kb={kb} run={run} />}
             {tab === 'perkey' && <PerKeyPanel kb={kb} run={run} />}
             {tab === 'remap' && <RemapPanel kb={kb} run={run} />}
             {tab === 'settings' && <SettingsPanel kb={kb} run={run} onReset={() => setEpoch((e) => e + 1)} />}
+            </fieldset>
           </main>
         </div>
       )}
@@ -137,7 +150,13 @@ export default function App() {
         )}
         {error && (
           <div className="toast error" onClick={() => setError(null)} title="Dismiss">
-            <AlertCircle size={16} /> {error}
+            <AlertCircle size={16} /> <span>{error}</span>
+            <button className="btn" aria-label="Retry" onClick={(e) => {
+              e.stopPropagation();
+              setError(null);
+              if (kb) setEpoch((n) => n + 1);
+              else void connect();
+            }}>Retry</button>
           </div>
         )}
       </div>

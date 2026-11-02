@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "selftest": "tsx scripts/selftest.ts"
+    "selftest": "tsx scripts/selftest.ts",
+    "test": "tsx --test scripts/transport.test.ts"
   },
   "dependencies": {
     "lucide-react": "^1.66.0",

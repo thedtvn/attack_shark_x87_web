@@ -67,7 +67,7 @@ export class LedConfig {
   }
 
   get valid() {
-    return this.bytes[OFF_MARKER] === 0x5a && this.bytes[OFF_MARKER + 1] === 0xa5;
+    return this.bytes.length === LED_CONFIG_LEN && this.bytes[OFF_MARKER] === 0x5a && this.bytes[OFF_MARKER + 1] === 0xa5;
   }
 
   get effectId() {

@@ -21,17 +21,42 @@ export interface Transport {
   write(block: Block, sub: number, data: Uint8Array): Promise<void>;
   /** Factory reset (USB cmd 0x11, 2.4G cmd 0x06; not acknowledged). */
   factoryReset(): Promise<void>;
+  dispose(): void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function hasCollection(d: HIDDevice, page: number, usage: number) {
-  return d.collections.some((c) => c.usagePage === page && c.usage === usage);
+function collections(cs: readonly HIDCollectionInfo[]): HIDCollectionInfo[] {
+  return cs.flatMap((c) => [c, ...collections(c.children ?? [])]);
+}
+
+export function isConfigDevice(d: HIDDevice): boolean {
+  const cs = collections(d.collections);
+  if (d.vendorId === VID_WIRED && d.productId === PID_WIRED) {
+    return cs.some((c) => c.usagePage === 0xff00 && c.usage === 1 &&
+      c.featureReports?.some((r) => r.reportId === 6 &&
+        (r.items ?? []).reduce((n, item) => n + (item.reportSize ?? 0) * (item.reportCount ?? 0), 0) === 519 * 8));
+  }
+  return d.vendorId === VID_WIRELESS && d.productId === PID_WIRELESS &&
+    cs.some((c) => c.usagePage === 0xff02 && c.usage === 2 &&
+      c.outputReports?.some((r) => r.reportId === 0x13));
+}
+
+export function parseWiredReply(view: DataView, cmd: number, sub: number, total: number, index: number, size: number): Uint8Array {
+  // Chromium returns numbered feature reports WITH their ID, even if the
+  // device returns only 136 bytes rather than the descriptor's maximum 520.
+  if (view.byteLength < 8 + size || view.getUint8(0) !== 6 ||
+      view.getUint8(1) !== cmd || view.getUint8(2) !== sub ||
+      view.getUint8(3) !== 0 || view.getUint8(4) !== total ||
+      view.getUint8(5) !== index || view.getUint16(6, true) !== size) {
+    throw new Error('Invalid USB configuration reply. Reconnect the keyboard and close the vendor app.');
+  }
+  return new Uint8Array(view.buffer, view.byteOffset + 8, size).slice();
 }
 
 export function createTransport(d: HIDDevice): Transport {
-  if (d.vendorId === VID_WIRED && hasCollection(d, 0xff00, 1)) return new WiredTransport(d);
-  if (d.vendorId === VID_WIRELESS && hasCollection(d, 0xff02, 2)) return new WirelessTransport(d);
+  if (isConfigDevice(d) && d.vendorId === VID_WIRED) return new WiredTransport(d);
+  if (isConfigDevice(d) && d.vendorId === VID_WIRELESS) return new WirelessTransport(d);
   throw new Error('Selected HID interface is not an X87 configuration interface');
 }
 
@@ -49,6 +74,17 @@ const FEATURE_DATA_LEN = 0x207; // 0x208 minus the report id
 const CHUNK = 0x200;
 
 class WiredTransport implements Transport {
+  private busy: Promise<unknown> = Promise.resolve();
+  private closed = false;
+  dispose() { this.closed = true; }
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.busy.then(() => {
+      if (this.closed) throw new Error('Keyboard disconnected');
+      return fn();
+    });
+    this.busy = run.catch(() => undefined);
+    return run;
+  }
   readonly kind = 'wired' as const;
   readonly device: HIDDevice;
   constructor(device: HIDDevice) {
@@ -83,7 +119,11 @@ class WiredTransport implements Transport {
     throw err;
   }
 
-  async write(block: Block, sub: number, data: Uint8Array) {
+  write(block: Block, sub: number, data: Uint8Array) {
+    return this.exclusive(() => this.writeData(block, sub, data));
+  }
+
+  private async writeData(block: Block, sub: number, data: Uint8Array) {
     const cmd = WIRED_CMD[block];
     const total = Math.ceil(data.length / CHUNK);
     for (let i = 0; i < total; i++) {
@@ -93,12 +133,18 @@ class WiredTransport implements Transport {
     }
   }
 
-  async factoryReset() {
-    await sleep(20);
-    await this.sendFeature(this.packet(0x11, 0, 1, 0, 1, Uint8Array.of(0)));
+  factoryReset() {
+    return this.exclusive(async () => {
+      await sleep(20);
+      await this.sendFeature(this.packet(0x11, 0, 1, 0, 1, Uint8Array.of(0)));
+    });
   }
 
-  async read(block: Block, sub: number, len: number) {
+  read(block: Block, sub: number, len: number) {
+    return this.exclusive(() => this.readData(block, sub, len));
+  }
+
+  private async readData(block: Block, sub: number, len: number) {
     const cmd = WIRED_CMD[block] | 0x80;
     const total = Math.ceil(len / CHUNK);
     const out = new Uint8Array(len);
@@ -108,9 +154,7 @@ class WiredTransport implements Transport {
       await this.sendFeature(this.packet(cmd, sub, total, i, size));
       await sleep(20);
       const view = await this.device.receiveFeatureReport(REPORT_ID);
-      // Some platforms include the report id as byte 0.
-      const off = view.byteLength >= 0x208 ? 8 : 7;
-      out.set(new Uint8Array(view.buffer, view.byteOffset + off, size), i * CHUNK);
+      out.set(parseWiredReply(view, cmd, sub, total, i, size), i * CHUNK);
     }
     return out;
   }
@@ -150,19 +194,27 @@ class WirelessTransport implements Transport {
   private waiters: ((p: Uint8Array) => void)[] = [];
   private busy: Promise<unknown> = Promise.resolve();
 
+  private closed = false;
+  private onInput = (e: HIDInputReportEvent) => {
+    if (e.reportId !== W_REPORT_ID || this.closed) return;
+    // Preserve actual length: zero-padding a truncated report hides errors.
+    const p = new Uint8Array(e.data.byteLength + 1);
+    p[0] = e.reportId;
+    p.set(new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength), 1);
+    const w = this.waiters.shift();
+    if (w) w(p);
+    else if (this.queue.length < 256) this.queue.push(p);
+  };
+  dispose() {
+    this.closed = true;
+    this.device.removeEventListener('inputreport', this.onInput);
+    this.waiters.splice(0).forEach((w) => w(new Uint8Array()));
+    this.queue = [];
+  }
   readonly device: HIDDevice;
   constructor(device: HIDDevice) {
     this.device = device;
-    device.addEventListener('inputreport', (e) => {
-      if (e.reportId !== W_REPORT_ID) return;
-      // Re-add report id so offsets match the documented layout.
-      const p = new Uint8Array(20);
-      p[0] = e.reportId;
-      p.set(new Uint8Array(e.data.buffer, e.data.byteOffset, Math.min(19, e.data.byteLength)), 1);
-      const w = this.waiters.shift();
-      if (w) w(p);
-      else this.queue.push(p);
-    });
+    device.addEventListener('inputreport', this.onInput);
   }
 
   private next(timeout = 2000): Promise<Uint8Array | null> {
@@ -187,7 +239,10 @@ class WirelessTransport implements Transport {
 
   /** Serialise transactions: replies are matched by command only. */
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.busy.then(fn, fn);
+    const run = this.busy.then(() => {
+      if (this.closed) throw new Error('Keyboard disconnected');
+      return fn();
+    });
     this.busy = run.catch(() => undefined);
     return run;
   }
@@ -214,6 +269,7 @@ class WirelessTransport implements Transport {
     for (let n = 0; n < 20; n++) {
       const r = await this.next();
       if (!r) return 'timeout';
+      if (r.length !== 20) throw new Error('Truncated 2.4G acknowledgement');
       if (r[0] === 0xff) throw new Error('2.4G: device reported failure');
       if (r[2] & 0x80) return 'checksum';
       if (r[1] !== cmd) continue;
@@ -233,28 +289,37 @@ class WirelessTransport implements Transport {
   read(block: Block, sub: number, len: number) {
     return this.exclusive(async () => {
       const cmd = WIRELESS_CMD[block][1];
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < 2; attempt++) {
         this.queue = [];
         await this.send(wirelessPacket(cmd, 1, 0, sub));
         const out = new Uint8Array(len);
         const seen = new Set<number>();
         let ok = false;
+        const deadline = Date.now() + 2500;
+        let received = 0;
         for (;;) {
-          const r = await this.next();
+          const remaining = deadline - Date.now();
+          if (remaining <= 0 || received++ > 256) break;
+          const r = await this.next(Math.min(1500, remaining));
           if (!r) break;
+          if (r.length !== 20) throw new Error('Truncated 2.4G configuration reply');
           if (r[0] === 0xff) throw new Error('2.4G: device reported failure');
           if (r[1] !== cmd) continue;
           if (r[2] & 0x80) break;
           const total = r[2] & 0x7f;
           const index = r[3];
+          const off = index * W_DATA;
+          const size = r[4] & 0x0f;
+          if (total !== Math.ceil(len / W_DATA) || index >= total ||
+              size !== Math.min(W_DATA, len - off)) {
+            throw new Error('Invalid 2.4G configuration reply length or packet index');
+          }
           if (!seen.has(index)) {
             seen.add(index);
-            const off = index * W_DATA;
-            const n = Math.min(r[4] & 0x0f, W_DATA, Math.max(0, len - off));
-            if (n > 0) out.set(r.subarray(5, 5 + n), off);
+            out.set(r.subarray(5, 5 + size), off);
           }
-          if (index + 1 >= total) {
-            ok = seen.size >= total;
+          if (seen.size === total) {
+            ok = true;
             break;
           }
         }
