@@ -155,7 +155,22 @@ export class X87 {
     return this.t.write('keyMatrix', layer, m.bytes);
   }
 
-  /** Read the bank over USB or eight tagged 512-byte receiver pages. */
+  private macroCache: Promise<MacroDefinition[]> | null = null;
+
+  /**
+   * Cached bank, read once per connection (prefetched right after connect so
+   * opening Macros / Key remap is instant). Failures are not cached.
+   */
+  macroBank(): Promise<MacroDefinition[]> {
+    if (!this.macroCache) {
+      const pending = this.readMacroBank();
+      this.macroCache = pending;
+      pending.catch(() => { if (this.macroCache === pending) this.macroCache = null; });
+    }
+    return this.macroCache.then((bank) => structuredClone(bank));
+  }
+
+  /** Fresh read: always queries the device (used for backups and verification). */
   async readMacroBank(): Promise<MacroDefinition[]> {
     return decodeMacroBank(await this.read('macro', 0, MACRO_BANK_SIZE));
   }
@@ -176,11 +191,13 @@ export class X87 {
         }
       }
     }
+    this.macroCache = null; // Bank may be partially written from here on.
     await this.t.writeMacroBank(bytes);
     const actual = await this.read('macro', 0, MACRO_BANK_SIZE);
     if (actual.length !== bytes.length || actual.some((b, i) => b !== bytes[i])) {
       throw new Error('Macro bank verification failed. Do not assign a key; restore your backup.');
     }
+    this.macroCache = Promise.resolve(decodeMacroBank(actual));
     return { verified: true };
   }
 

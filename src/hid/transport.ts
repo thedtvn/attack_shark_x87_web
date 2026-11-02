@@ -1,6 +1,7 @@
 // Two transports, reverse engineered from OemDrv.exe:
 //  - USB cable  (CDevG5KB): 0x208-byte feature reports, report id 6, usage page 0xFF00.
 //  - 2.4G dongle (CDev3632): 20-byte input/output reports, report id 0x13, usage page 0xFF02.
+import { preciseTimeout, sleep } from './timer';
 
 export const VID_WIRED = 0x258a;
 export const PID_WIRED = 0x010c;
@@ -25,7 +26,6 @@ export interface Transport {
   dispose(): void;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function collections(cs: readonly HIDCollectionInfo[]): HIDCollectionInfo[] {
   return cs.flatMap((c) => [c, ...collections(c.children ?? [])]);
@@ -272,10 +272,10 @@ class WirelessTransport implements Transport {
     if (q) return Promise.resolve(q);
     return new Promise((resolve) => {
       const w = (p: Uint8Array) => {
-        clearTimeout(t);
+        cancel();
         resolve(p);
       };
-      const t = setTimeout(() => {
+      const cancel = preciseTimeout(() => {
         this.waiters = this.waiters.filter((x) => x !== w);
         resolve(null);
       }, timeout);
@@ -370,24 +370,31 @@ class WirelessTransport implements Transport {
 
   private async readData(cmd: number, sub: number, len: number, minimum: number): Promise<Uint8Array> {
     let failure = 'incomplete stream';
-    for (let attempt = 0; attempt < 6; attempt++) {
+    // Measured: a 37-packet page streams in ~160 ms; first packet within ~80 ms.
+    // The receiver cannot pipeline (a new request aborts the previous one), so
+    // reads are sequential. Drops are common: keep identical packets across
+    // retries of the same request and re-request quickly after a short idle gap.
+    let stream = new WirelessReadStream(cmd, sub, len, minimum);
+    for (let attempt = 0; attempt < 8; attempt++) {
       if (this.closed) throw new Error('Keyboard disconnected');
       this.queue = [];
-      const stream = new WirelessReadStream(cmd, sub, len, minimum);
       await this.send(wirelessPacket(cmd, 1, 0, sub));
-      const deadline = Date.now() + 3000;
-      for (let received = 0; received < 512 && Date.now() < deadline; received++) {
-        const r = await this.next(Math.min(1500, deadline - Date.now()));
+      let first = true;
+      for (let received = 0; received < 512; received++) {
+        const r = await this.next(first ? 700 : 120);
         if (!r) break;
         try {
           const result = stream.push(r);
+          if (r[1] === cmd) first = false;
           if (result) return result;
         } catch (e) {
           failure = e instanceof Error ? e.message : String(e);
-          break; // Retry a whole stream; never merge different transactions.
+          // Conflicting/inconsistent data: discard everything and start over.
+          stream = new WirelessReadStream(cmd, sub, len, minimum);
+          break;
         }
       }
-      await sleep(100);
+      await sleep(20);
     }
     throw new Error(`2.4G read failed (cmd 0x${cmd.toString(16)}, page ${sub}): ${failure}. Wake the keyboard and close other keyboard apps.`);
   }

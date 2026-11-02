@@ -111,8 +111,12 @@ playback test.
 - USB can import/read the bank and compares uploads with a full read-back.
 - 2.4G macro read/write uses eight tagged 512-byte pages (`43` read / `03`
   write), confirmed in Ghidra and verified on hardware (write, byte-identical
-  read-back, restore). Playback is not yet validated. A save takes ~20 s over
-  2.4G. Backup/read-back must complete or the operation fails.
+  read-back, restore). Playback is not yet validated. Over 2.4G a full bank
+  read takes ~1.5–2.5 s and a save ~15 s. The bank is prefetched in the
+  background after connecting and shared by Macros and Key remap.
+  Backup/read-back must complete or the operation fails.
+- HID pacing uses Worker-based timers, so throttled/background tabs (and
+  automation-driven windows) keep normal speed instead of ~1 s timer ticks.
 - Existing references on all layers are checked before upload. References to
   slots missing in the replacement block the upload.
 - The Macros page only edits/uploads the bank; it never writes key bindings.

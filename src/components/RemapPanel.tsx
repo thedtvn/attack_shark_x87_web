@@ -87,16 +87,12 @@ export function RemapPanel({ kb, run }: Props) {
 
   useEffect(() => {
     let active = true;
-    run('Reading macro names', async () => {
-      try {
-        const bank = await kb.readMacroBank();
-        if (active) setMacroBank(bank);
-      } catch (e) {
-        if (active) setMacroBankError(`Macro bank could not be read: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
+    // Names only: load in the background (shared cache), never lock the UI.
+    kb.macroBank()
+      .then((bank) => { if (active) setMacroBank(bank); })
+      .catch((e) => { if (active) setMacroBankError(`Macro bank could not be read: ${e instanceof Error ? e.message : String(e)}`); });
     return () => { active = false; };
-  }, [kb, run]);
+  }, [kb]);
 
   useEffect(() => {
     if (matrices[layer]) return;

@@ -78,7 +78,7 @@ export function MacroPanel({ kb, run }: Props) {
     let active = true;
     run('Reading macro bank', async () => {
       try {
-        const bank = bankToEditor(await kb.readMacroBank());
+        const bank = bankToEditor(await kb.macroBank());
         if (!active) return;
         setDrafts(bank);
         setSavedBank(bank);

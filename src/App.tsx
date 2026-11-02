@@ -57,6 +57,14 @@ function AppContent() {
     };
   }, []);
 
+  // Background prefetch: transport serializes requests, so start after the
+  // visible panel's first reads have been queued; panels later get the cache.
+  useEffect(() => {
+    if (!kb) return;
+    const timer = setTimeout(() => { kb.macroBank().catch(() => undefined); }, 1500);
+    return () => clearTimeout(timer);
+  }, [kb]);
+
   const connect = async () => {
     if (!allowLeave()) return;
     setError(null);
