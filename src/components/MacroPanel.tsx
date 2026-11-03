@@ -395,7 +395,7 @@ export function MacroPanel({ kb, run }: Props) {
 
   return (
     <div className="macro-container">
-      <p className="note"><strong>Experimental:</strong> Macro encoding is based on reverse engineering. Playback and indefinite repeat behavior have not been hardware-validated. Use Export JSON to keep a copy before saving.</p>
+      <p className="note">Use Export JSON to keep a copy before saving.</p>
       {/* Hidden file input for JSON import */}
       <input type="file" ref={fileInputRef} accept=".json,application/json" style={{ display: 'none' }} onChange={handleImportJson} />
 

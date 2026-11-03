@@ -28,7 +28,38 @@ export interface Transport {
   writeMacroBank(data: Uint8Array, onProgress?: Progress): Promise<void>;
   /** Full 4096-byte bank read; `onProgress(done, total)` counts pages/chunks. */
   readMacroBank(onProgress?: Progress): Promise<Uint8Array>;
+  /** 2.4G only: whether the keyboard is linked to the receiver (cmd 0x07). */
+  linkStatus?(): Promise<boolean>;
+  /** 2.4G only: battery (cmd 0x4A); null when the link is down. */
+  battery?(): Promise<Battery | null>;
+  /** 2.4G only: link/battery reports the receiver pushes on its own. */
+  onStatus?: ((e: StatusReport) => void) | null;
   dispose(): void;
+}
+
+export interface Battery {
+  /** 0..100. */
+  percent: number;
+  /** State byte 0x10 (observed while charging). */
+  charging: boolean;
+}
+
+export type StatusReport = { kind: 'link'; linked: boolean } | { kind: 'battery'; battery: Battery };
+
+/** Receiver report `13 0A .. .. .. kind value state`; kind 2 = link, 5 = battery. */
+/** The 2.4G keyboard is asleep or switched off (the receiver reports no link). */
+export class KeyboardAsleepError extends Error {
+  constructor() {
+    super('Keyboard is asleep. Press any key to wake it.');
+    this.name = 'KeyboardAsleepError';
+  }
+}
+
+export function parseStatusReport(p: Uint8Array): StatusReport | null {
+  if (p.length < 20 || p[0] !== 0x13 || p[1] !== 0x0a) return null;
+  if (p[5] === 0x02) return { kind: 'link', linked: p[6] !== 0 };
+  if (p[5] === 0x05) return { kind: 'battery', battery: { percent: Math.min(100, p[6]), charging: (p[7] & 0x10) !== 0 } };
+  return null;
 }
 
 
@@ -256,12 +287,20 @@ class WirelessTransport implements Transport {
   private busy: Promise<unknown> = Promise.resolve();
 
   private closed = false;
+  onStatus: ((e: StatusReport) => void) | null = null;
   private onInput = (e: HIDInputReportEvent) => {
     if (e.reportId !== W_REPORT_ID || this.closed) return;
     // Preserve actual length: zero-padding a truncated report hides errors.
     const p = new Uint8Array(e.data.byteLength + 1);
     p[0] = e.reportId;
     p.set(new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength), 1);
+    // Unsolicited link / battery report: never a transaction reply.
+    const status = parseStatusReport(p);
+    if (status) {
+      this.setLinked(status.kind === 'link' ? status.linked : true);
+      this.onStatus?.(status);
+      return;
+    }
     const w = this.waiters.shift();
     if (w) w(p);
     else if (this.queue.length < 256) this.queue.push(p);
@@ -270,9 +309,57 @@ class WirelessTransport implements Transport {
     this.closed = true;
     this.device.removeEventListener('inputreport', this.onInput);
     this.waiters.splice(0).forEach((w) => w(new Uint8Array()));
+    this.wakeWaiters.splice(0).forEach((w) => w());
     this.queue = [];
   }
   readonly device: HIDDevice;
+
+  /** Link state from receiver reports / queries; null until known. */
+  private linked: boolean | null = null;
+  private wakeWaiters: (() => void)[] = [];
+
+  private setLinked(v: boolean) {
+    this.linked = v;
+    if (v) this.wakeWaiters.splice(0).forEach((w) => w());
+  }
+
+  /** Record a link state found by a query and tell the listener. */
+  private reportLinked(v: boolean) {
+    if (this.linked === v) return;
+    this.setLinked(v);
+    this.onStatus?.({ kind: 'link', linked: v });
+  }
+
+  /**
+   * Wait until the keyboard wakes: the receiver pushes a link report; as a
+   * fallback the link is polled every 3 s.
+   */
+  private async waitAwake() {
+    while (!this.closed && this.linked === false) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          cancel();
+          resolve();
+        };
+        const cancel = preciseTimeout(() => {
+          this.wakeWaiters = this.wakeWaiters.filter((w) => w !== done);
+          resolve();
+        }, 3000);
+        this.wakeWaiters.push(done);
+      });
+      if (this.closed || this.linked !== false) break;
+      const p = await this.query(0x07, 600).catch(() => null);
+      if (p && p[5] !== 0) this.reportLinked(true);
+    }
+  }
+
+  /** After a failed transaction: is the keyboard simply asleep? */
+  private async probeAsleep(): Promise<boolean> {
+    const p = await this.query(0x07, 600).catch(() => null);
+    if (!p || p[5] !== 0) return false;
+    this.reportLinked(false);
+    return true;
+  }
   constructor(device: HIDDevice) {
     this.device = device;
     device.addEventListener('inputreport', this.onInput);
@@ -298,14 +385,68 @@ class WirelessTransport implements Transport {
     return this.device.sendReport(W_REPORT_ID, p.slice(1));
   }
 
-  /** Serialise transactions: replies are matched by command only. */
-  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.busy.then(() => {
-      if (this.closed) throw new Error('Keyboard disconnected');
-      return fn();
+  /**
+   * Serialise transactions: replies are matched by command only.
+   *
+   * With `waitAwake`, reads and writes do not fail while the keyboard sleeps:
+   * they wait for it to wake, then run, or run again if it fell asleep
+   * midway. Each transaction rewrites / rereads a whole block, so a re-run is
+   * safe.
+   */
+  private exclusive<T>(fn: () => Promise<T>, waitAwake = true): Promise<T> {
+    const run = this.busy.then(async () => {
+      for (;;) {
+        if (this.closed) throw new Error('Keyboard disconnected');
+        if (waitAwake && this.linked === false) {
+          await this.waitAwake();
+          continue;
+        }
+        try {
+          return await fn();
+        } catch (e) {
+          if (!waitAwake || this.closed) throw e;
+          if (!(e instanceof KeyboardAsleepError) && !(await this.probeAsleep())) throw e;
+        }
+      }
     });
     this.busy = run.catch(() => undefined);
     return run;
+  }
+
+  /** Send a one-packet query and wait for a reply with `cmd` at [1]. */
+  private async query(cmd: number, timeout: number): Promise<Uint8Array | null> {
+    this.queue = [];
+    await this.send(wirelessPacket(cmd, 1, 0, 0));
+    const end = performance.now() + timeout;
+    for (;;) {
+      const left = end - performance.now();
+      if (left <= 0) return null;
+      const p = await this.next(left);
+      if (!p) return null;
+      if (p.length >= 20 && p[1] === cmd) return p;
+    }
+  }
+
+  linkStatus() {
+    return this.exclusive(async () => {
+      const p = await this.query(0x07, 600);
+      if (!p) throw new Error('2.4G receiver did not answer the link query');
+      this.reportLinked(p[5] !== 0);
+      return p[5] !== 0;
+    }, false);
+  }
+
+  /** Reply `13 4A 00 00 00 percent state` (can take ~1 s). */
+  battery() {
+    return this.exclusive(async (): Promise<Battery | null> => {
+      const link = await this.query(0x07, 600);
+      if (!link) return null;
+      this.reportLinked(link[5] !== 0);
+      if (link[5] === 0) return null;
+      const p = await this.query(0x4a, 2500);
+      if (!p) return null;
+      return { percent: Math.min(100, p[5]), charging: (p[6] & 0x10) !== 0 };
+    }, false);
   }
 
   write(block: Block, sub: number, data: Uint8Array) {
@@ -321,6 +462,7 @@ class WirelessTransport implements Transport {
       const pkt = wirelessPacket(cmd, total, i, sub, data.subarray(i * W_DATA, (i + 1) * W_DATA));
       for (let attempt = 0; ; attempt++) {
         if (this.closed) throw new Error('Keyboard disconnected');
+        if (this.linked === false) throw new KeyboardAsleepError();
         await sleep(15);
         await this.send(pkt);
         const res = await this.waitAck(cmd, i);
@@ -399,6 +541,7 @@ class WirelessTransport implements Transport {
     let stream = new WirelessReadStream(cmd, sub, len, minimum);
     for (let attempt = 0; attempt < 8; attempt++) {
       if (this.closed) throw new Error('Keyboard disconnected');
+      if (this.linked === false) throw new KeyboardAsleepError();
       this.queue = [];
       await this.send(wirelessPacket(cmd, 1, 0, sub));
       let first = true;

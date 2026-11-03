@@ -300,7 +300,7 @@ function ActionPicker({
           {CONTROLLER_SHORTCUTS.map((item) => <button key={item.key}
             className={same(action, fnShortcutAction(item)) ? 'chip on' : 'chip'}
             onClick={async () => {
-              if (item.key === 'Space' && !await popup.confirm({ title: 'Assign factory reset?', confirmLabel: 'Assign reset', danger: true, message: 'Triggering this action can erase custom mappings, lighting and macros. The manual specifies holding Fn + Space for 3 seconds; behavior on a remapped key is not hardware-validated.' })) return;
+              if (item.key === 'Space' && !await popup.confirm({ title: 'Assign factory reset?', confirmLabel: 'Assign reset', danger: true, message: 'Triggering this action can erase custom mappings, lighting and macros. The manual specifies holding Fn + Space for 3 seconds.' })) return;
               onChange(fnShortcutAction(item));
             }}>
             {item.name}
@@ -379,7 +379,7 @@ function ActionPicker({
                   })
                 }
               >
-                Until Any Key (Experimental)
+                Until Any Key
               </button>
             </div>
             {currentRepeat.mode === 'times' && (

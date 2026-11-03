@@ -13,8 +13,10 @@
   --accent-soft: #fff1e8;
   --ok: #18b26b;
   --danger: #e5484d;
+  --warn: #d97706;
   --shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 4px 16px rgb(16 24 40 / 0.06);
   --radius: 14px;
+  color-scheme: light;
   font-family: Inter, 'Segoe UI', system-ui, sans-serif;
   font-size: 14px;
   color: var(--text);
@@ -33,6 +35,7 @@
   --ink: #f2f3f5;
   --on-ink: #0d0e11;
   --accent-soft: #3a2416;
+  --warn: #f5a524;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.25);
   color-scheme: dark;
 }
@@ -172,6 +175,15 @@ input {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent);
 }
 
+.conn-dot {
+  transition: background 0.25s, box-shadow 0.25s;
+}
+
+.conn-dot.asleep {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+
 .tag {
   font-size: 11px;
   font-weight: 700;
@@ -179,6 +191,30 @@ input {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text-2);
+}
+
+.conn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  cursor: default;
+}
+
+.conn-status.low {
+  color: var(--danger);
+}
+
+.conn-status.charging {
+  /* Darker than --ok so small text stays readable on the light pill. */
+  color: color-mix(in srgb, var(--ok) 70%, var(--text));
+}
+
+.conn-status.asleep {
+  color: var(--warn);
 }
 
 /* ------------------------------------------------------------- empty state */
@@ -405,11 +441,50 @@ input {
   box-shadow: 0 20px 60px rgb(0 0 0 / 0.3);
 }
 .confirm-dialog::backdrop { background: rgb(0 0 0 / 0.5); }
+/* The asleep dialog blocks the whole app: a firmer, blurred backdrop. */
+.asleep-dialog::backdrop { background: rgb(0 0 0 / 0.62); backdrop-filter: blur(3px); }
 .confirm-dialog h2 { font-size: 18px; margin: 0 0 14px; }
 .confirm-dialog p { color: var(--text-2); line-height: 1.6; }
 .popup-message { white-space: pre-line; max-height: 55vh; overflow-y: auto; }
 .confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .confirm-dialog .btn.danger { background: var(--danger); border-color: var(--danger); color: white; }
+
+.asleep-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.asleep-dialog-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
+  color: var(--warn);
+  flex-shrink: 0;
+}
+
+.asleep-dialog-header h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.asleep-dialog-body p {
+  margin: 0 0 6px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.asleep-dialog-body .hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
 .savebar:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* ---------------------------------------------------------------- keyboard */

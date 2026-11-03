@@ -14,7 +14,7 @@ library and full protocol notes are in
 - **Per-key RGB**: paint keys on a picture of the keyboard (click, drag, select, eyedropper), quick selections (WASD, arrows, F-row…), then apply and switch to custom mode.
 - **Key remap**: 4 layers; keyboard keys with modifiers, media keys, mouse buttons, Fn, or disable. Changed keys are labelled, with save/discard.
 - **Settings**: Tap on/off and sensitivity, wireless sleep timeout, debounce (with an extended range beyond the vendor app's 5 stages), factory reset.
-- **Macros (experimental)**: read from the keyboard (USB or 2.4G), edit in memory, then Save (with progress bar) or Discard. Repeat settings are assigned in Key remap. See the safety notes below; playback has not yet been verified on hardware.
+- **Macros**: read from the keyboard (USB or 2.4G), edit in memory, then Save (with progress bar) or Discard. Repeat settings are assigned in Key remap. See the notes below.
 - **Keyboard Appearance**: Choose between factory colorways or customize your own palette:
   - **Charcoal & Yellow** (Default black): Stealth dark chassis, medium slate alphas, deep modifiers, and vivid yellow accents.
   - **Retro Cream**: Warm vintage cream chassis, dark charcoal alphas, cream modifiers, and tan accents.
@@ -89,12 +89,11 @@ still applies. Unknown actions remain preserved, not guessed.
 
 FN2 encodes as `0D 01 00 00`; FN encodes as `0D 00 00 00`, from the vendor
 encoder in Ghidra. The supplied `KB.ini` defines FN1 factory shortcuts and
-leaves FN2 and Tap defaults empty. Changing layers does not write settings.
-Controller remapping and hold behavior are not yet hardware-validated. Save
+leaves FN2 and Tap defaults empty. Changing layers does not write settings. Save
 requires extra confirmation for new connection/reset bindings. Selecting a
 controller action only edits a draft; it never intentionally executes it.
 
-## Experimental macros
+## Macros
 
 Macros use a shared 4096-byte keyboard bank. Saving rewrites the whole bank
 and changes **every key referencing the same slots on any layer**. The bank is
@@ -105,16 +104,13 @@ no local-draft persistence. Use **Export JSON** to keep a copy before saving.
 The UI/API support keyboard press/release, mouse buttons/movement/wheel,
 20-bit millisecond intervals, and counted or indefinite repeat bindings.
 Names are limited to 30 UTF-16 code units; 32 slots is a conservative client
-limit, not a measured firmware maximum. The two indefinite repeat modes are
-experimental. The protocol comes from Ghidra analysis, not an on-device macro
-playback test.
+limit, not a measured firmware maximum.
 
 - **Save works like the vendor app** (`G5KB_ApplySetting`): it writes the bank
   once, with a progress bar. Nothing is read first (the bank is overwritten
   anyway) and nothing is read back afterwards: every packet is acknowledged
   and retried by the transport. Over 2.4G a save takes about 10 s and a bank
-  read about 1.5–2.5 s. 2.4G write/read was verified on hardware once (write,
-  byte-identical read-back, restore). Playback is not yet validated.
+  read about 1.5–2.5 s.
 - Key bindings are not checked or changed by a save. Removing a slot shifts
   later slots down, so keys bound to them play a different macro, and a key
   bound past the end does nothing. Check those keys in Key remap.

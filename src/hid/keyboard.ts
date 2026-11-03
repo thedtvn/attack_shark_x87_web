@@ -1,4 +1,4 @@
-import { createTransport, isConfigDevice, HID_FILTERS, type Transport } from './transport';
+import { createTransport, isConfigDevice, HID_FILTERS, type Battery, type Transport } from './transport';
 import { decodeMacroBank, encodeMacroBank, type MacroDefinition } from './macros';
 import {
   KeyMatrix,
@@ -13,6 +13,18 @@ import {
 } from './protocol';
 
 export const webHidSupported = typeof navigator !== 'undefined' && 'hid' in navigator;
+
+export type { Battery };
+
+export interface KeyboardStatus {
+  /** Over 2.4G: linked to the receiver (false while asleep / off). Always true over USB. */
+  linked: boolean;
+  /** 2.4G only; null over USB or while asleep. */
+  battery: Battery | null;
+}
+
+const sameBattery = (a: Battery | null, b: Battery | null) =>
+  a === b || (!!a && !!b && a.percent === b.percent && a.charging === b.charging);
 
 /** High level API, mirrors the Rust `Keyboard`. */
 export class X87 {
@@ -33,6 +45,75 @@ export class X87 {
 
   get connection() {
     return this.t.kind;
+  }
+
+  // ---- link (sleep / wake) and battery --------------------------------------
+
+  private statusState: KeyboardStatus = { linked: true, battery: null };
+  private statusListeners = new Set<(s: KeyboardStatus) => void>();
+  private statusStarted = false;
+
+  /** Last known link / battery state. */
+  get status(): KeyboardStatus {
+    return this.statusState;
+  }
+
+  private setStatus(patch: Partial<KeyboardStatus>) {
+    const next = { ...this.statusState, ...patch };
+    // Battery is unknown while asleep.
+    if (!next.linked) next.battery = null;
+    if (next.linked === this.statusState.linked && sameBattery(next.battery, this.statusState.battery)) return;
+    this.statusState = next;
+    this.statusListeners.forEach((l) => l(next));
+  }
+
+  /**
+   * Subscribe to link (2.4G sleep / wake) and battery changes; returns an
+   * unsubscribe function. Over USB the keyboard is always linked and has no
+   * battery reading (`battery` stays null).
+   */
+  onStatus(listener: (s: KeyboardStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    listener(this.statusState);
+    if (!this.statusStarted) {
+      this.statusStarted = true;
+      if (this.t.kind === 'wireless') {
+        this.t.onStatus = (r) => {
+          if (r.kind === 'link') {
+            this.setStatus({ linked: r.linked });
+            // Battery is pushed after wake; ask anyway in case it is not.
+            if (r.linked) void this.battery().catch(() => undefined);
+          } else this.setStatus({ linked: true, battery: r.battery });
+        };
+        void this.refreshStatus();
+      }
+    }
+    return () => this.statusListeners.delete(listener);
+  }
+
+  /** Query link and battery now (2.4G); no-op over USB. */
+  async refreshStatus(): Promise<KeyboardStatus> {
+    if (this.t.kind === 'wireless') {
+      try {
+        const linked = (await this.t.linkStatus?.()) ?? true;
+        this.setStatus({ linked });
+        if (linked) await this.battery();
+      } catch {
+        // Keep the last state; the receiver pushes changes anyway.
+      }
+    }
+    return this.statusState;
+  }
+
+  /**
+   * Battery level over 2.4G. `null` means the keyboard is connected by USB
+   * cable (no battery reading there) or is asleep / off.
+   */
+  async battery(): Promise<Battery | null> {
+    if (this.t.kind !== 'wireless' || !this.t.battery) return null;
+    const b = await this.t.battery();
+    this.setStatus(b ? { linked: true, battery: b } : { linked: false });
+    return b;
   }
 
   get device() {
@@ -72,6 +153,13 @@ export class X87 {
           if (!d.opened) await d.open();
           t = createTransport(d);
           const kb = new X87(t);
+          // Receiver plugged in but keyboard asleep: open anyway; the UI shows
+          // the asleep state and reads wait until it wakes.
+          if (t.kind === 'wireless' && t.linkStatus && !(await t.linkStatus())) {
+            kb.statusState = { linked: false, battery: null };
+            this.handles.set(d, kb);
+            return kb;
+          }
           // Receiver presence alone is not proof the keyboard is online.
           await kb.ledConfig();
           this.handles.set(d, kb);
@@ -91,6 +179,8 @@ export class X87 {
   }
 
   async close() {
+    this.statusListeners.clear();
+    if (this.t.onStatus !== undefined) this.t.onStatus = null;
     X87.handles.delete(this.t.device);
     this.t.dispose();
     if (this.t.device.opened) await this.t.device.close();

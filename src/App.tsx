@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, Grid3x3, Keyboard, Loader2, Moon, Plus, Settings2, Sun, Sunrise, Unplug, Workflow } from 'lucide-react';
+import { AlertCircle, Check, Grid3x3, Keyboard, Loader2, Monitor, Moon, Plus, Settings2, Sun, Sunrise, Unplug, Workflow } from 'lucide-react';
 import { X87, webHidSupported } from './hid/keyboard';
+import { isConfigDevice, PID_WIRED, VID_WIRED } from './hid/transport';
 import { LightingPanel } from './components/LightingPanel';
 import { PerKeyPanel } from './components/PerKeyPanel';
 import { RemapPanel } from './components/RemapPanel';
@@ -8,6 +9,7 @@ import { MacroPanel } from './components/MacroPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { AppearancePopover } from './components/AppearanceControls';
 import { KeyboardSvg } from './components/KeyboardGraphic';
+import { ASLEEP_TITLE, AsleepModal, ConnectionStatus, isAsleep, useKeyboardStatus } from './components/ConnectionStatus';
 import { AppearanceProvider } from './theme/AppearanceContext';
 import { useBusy } from './components/useBusy';
 import { PopupProvider } from './components/PopupProvider';
@@ -24,15 +26,45 @@ const NAV = [
   { id: 'settings', label: 'Settings', icon: Settings2 },
 ] as const;
 
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 function useTheme() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(
-    () => (localStorage.getItem('theme') as 'light' | 'dark') ?? 'light',
-  );
+  const [mode, setMode] = useState<ThemeMode>(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark' || saved === 'system') return saved;
+    return 'system';
+  });
+
+  const [systemDark, setSystemDark] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-  return [theme, () => setTheme((t) => (t === 'light' ? 'dark' : 'light'))] as const;
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  const resolvedTheme: 'light' | 'dark' = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.style.colorScheme = resolvedTheme;
+    localStorage.setItem('theme', mode);
+  }, [mode, resolvedTheme]);
+
+  const cycleMode = () => {
+    setMode((cur) => {
+      if (cur === 'system') return 'light';
+      if (cur === 'light') return 'dark';
+      return 'system';
+    });
+  };
+
+  return { mode, resolvedTheme, setMode, cycleMode };
 }
 
 function AppContent() {
@@ -40,8 +72,10 @@ function AppContent() {
   const [kb, setKb] = useState<X87 | null>(null);
   const [tab, setTab] = useState<Tab>('lighting');
   const [epoch, setEpoch] = useState(0);
-  const [theme, toggleTheme] = useTheme();
+  const { mode, resolvedTheme, cycleMode } = useTheme();
   const { busy, error, done, setError, run } = useBusy();
+  const status = useKeyboardStatus(kb);
+  const asleep = !!kb && isAsleep(kb, status);
 
   useEffect(() => {
     if (!webHidSupported) return;
@@ -64,6 +98,35 @@ function AppContent() {
     const timer = setTimeout(() => { kb.getMacros().catch(() => undefined); }, 1500);
     return () => clearTimeout(timer);
   }, [kb]);
+
+  // When sleeping over 2.4G, plugging in the USB cable switches to it automatically.
+  useEffect(() => {
+    if (!asleep || !kb || !webHidSupported) return;
+    let switching = false;
+    const onConnect = async (e: HIDConnectionEvent) => {
+      if (switching) return;
+      const d = e.device;
+      if (d.vendorId === VID_WIRED && d.productId === PID_WIRED && isConfigDevice(d)) {
+        switching = true;
+        try {
+          await kb.close();
+          const next = await X87.reconnect();
+          if (next) {
+            setKb(next);
+            setEpoch((n) => n + 1);
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          switching = false;
+        }
+      }
+    };
+    navigator.hid.addEventListener('connect', onConnect);
+    return () => {
+      navigator.hid.removeEventListener('connect', onConnect);
+    };
+  }, [asleep, kb]);
 
   const connect = async () => {
     if (!allowLeave()) return;
@@ -95,9 +158,10 @@ function AppContent() {
         <span className="spacer" />
         {kb && (
           <div className="device-pill">
-            <span className="conn-dot" />
+            <span className={asleep ? 'conn-dot asleep' : 'conn-dot'} title={asleep ? ASLEEP_TITLE : undefined} />
             X87
             <span className="tag">{kb.connection === 'wired' ? 'USB' : '2.4G'}</span>
+            <ConnectionStatus kb={kb} status={status} />
             <button className="icon-btn" onClick={connect} title="Choose device" aria-label="Choose device" disabled={!!busy}>
               <Plus size={16} />
             </button>
@@ -107,10 +171,35 @@ function AppContent() {
           </div>
         )}
         <AppearancePopover />
-        <button className="icon-btn" onClick={toggleTheme} title="Toggle theme">
-          {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+        <button
+          className="icon-btn theme-btn"
+          onClick={cycleMode}
+          title={
+            mode === 'system'
+              ? `Theme: System (${resolvedTheme})`
+              : mode === 'light'
+                ? 'Theme: Light'
+                : 'Theme: Dark'
+          }
+          aria-label={
+            mode === 'system'
+              ? `Theme: System (${resolvedTheme})`
+              : mode === 'light'
+                ? 'Theme: Light'
+                : 'Theme: Dark'
+          }
+        >
+          {mode === 'system' ? (
+            <Monitor size={18} />
+          ) : mode === 'light' ? (
+            <Sun size={18} />
+          ) : (
+            <Moon size={18} />
+          )}
         </button>
       </header>
+
+      {asleep && <AsleepModal onConnect={connect} onDisconnect={disconnect} />}
 
       {!kb && (
         <div className="empty" style={{ minHeight: 'calc(100vh - 56px)' }}>

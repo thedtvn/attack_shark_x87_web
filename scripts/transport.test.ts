@@ -112,3 +112,58 @@ test('wireless macro reads request eight distinct pages without any write comman
   try {const bank=await t.read('macro',0,4096);assert.equal(bank.length,4096);assert.deepEqual(requests,[0,1,2,3,4,5,6,7]);}
   finally {t.dispose();}
 });
+
+test('parseStatusReport reads receiver link / battery reports', async () => {
+  const { parseStatusReport } = await import('../src/hid/transport');
+  const pkt = (b: number[]) => { const p = new Uint8Array(20); p.set(b); return p; };
+  assert.deepEqual(parseStatusReport(pkt([0x13, 0x0a, 1, 0, 4, 2, 0])), { kind: 'link', linked: false });
+  assert.deepEqual(parseStatusReport(pkt([0x13, 0x0a, 1, 0, 4, 2, 1])), { kind: 'link', linked: true });
+  assert.deepEqual(parseStatusReport(pkt([0x13, 0x0a, 1, 0, 4, 5, 0x5d, 0x10])), { kind: 'battery', battery: { percent: 93, charging: true } });
+  assert.equal(parseStatusReport(pkt([0x13, 0x0a, 1, 0, 4, 7, 0])), null);
+  assert.equal(parseStatusReport(pkt([0x13, 0x41, 1, 0, 4, 2, 1])), null);
+});
+
+test('2.4G reads wait while the keyboard is asleep and resume on wake', async () => {
+  let listener: ((event: HIDInputReportEvent) => void) | undefined;
+  const led = new Uint8Array(128);
+  led[0x7e] = 0x5a; led[0x7f] = 0xa5;
+  let linked = false;
+  const sent: number[] = [];
+  const emit = (bytes: number[]) => {
+    const p = new Uint8Array(19); p.set(bytes.slice(1));
+    setTimeout(() => listener?.({ reportId: 0x13, data: new DataView(p.buffer) } as unknown as HIDInputReportEvent), 1);
+  };
+  const device = {
+    vendorId: 0x3554, productId: 0xfa09,
+    collections: [{ usagePage: 0xff02, usage: 2, outputReports: [{ reportId: 0x13 }] }],
+    addEventListener(_: string, l: typeof listener) { listener = l; },
+    removeEventListener() { listener = undefined; },
+    async sendReport(_id: number, data: BufferSource) {
+      const cmd = new Uint8Array(data as ArrayBuffer)[0];
+      sent.push(cmd);
+      if (cmd === 0x07) return emit([0x13, 0x07, 1, 0, 1, linked ? 1 : 0]);
+      if (cmd === 0x44 && linked) {
+        const total = Math.ceil(128 / 14);
+        for (let i = 0; i < total; i++) {
+          const chunk = [...led.slice(i * 14, i * 14 + 14)];
+          emit([0x13, 0x44, total, i, chunk.length, ...chunk]);
+        }
+      }
+    },
+  } as unknown as HIDDevice;
+  const transport = createTransport(device);
+  const links: boolean[] = [];
+  transport.onStatus = (s) => { if (s.kind === 'link') links.push(s.linked); };
+  assert.equal(await transport.linkStatus!(), false);
+  let done = false;
+  const read = transport.read('ledConfig', 0, 128).then((b) => { done = true; return b; });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(done, false, 'read must wait, not fail, while asleep');
+  assert.ok(!sent.includes(0x44), 'no config read is sent while asleep');
+  linked = true;
+  emit([0x13, 0x0a, 1, 0, 4, 2, 1]); // receiver: link up
+  const bytes = await read;
+  assert.equal(bytes[0x7e], 0x5a);
+  assert.deepEqual(links, [false, true]);
+  transport.dispose();
+});

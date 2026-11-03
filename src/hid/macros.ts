@@ -1,6 +1,5 @@
 // Firmware format from Ghidra: G5KB_EncodeMacroRecord / G5KB_FillKeyMatrix.
-// These codecs are tested offline; playback and indefinite-mode semantics
-// have not yet been validated on hardware. Never upload a vendor .mcr as-is.
+// Never upload a vendor .mcr as-is.
 export interface MacroEvent {
   type: 'key' | 'mouseButton' | 'moveX' | 'moveY' | 'wheel';
   value: number;
