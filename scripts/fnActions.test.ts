@@ -14,8 +14,8 @@ test('manual connection and lighting shortcuts map to exact wire words', () => {
   const fixtures = new Map([
     ['1', 0x05000007], ['2', 0x06000007], ['3', 0x07000007], ['4', 0x08000007],
     ['Backspace', 0x11000007], ['Space', 0x04000007], ['LWin', 0x01000007],
-    ['\\', 0x0000000a], ['Enter', 0x0002000a], ['Up', 0x0001030a], ['Down', 0x0002030a],
-    ['Left', 0x0002040a], ['Right', 0x0001040a], ['CapsLock', 0x0100000a], ['A', 0x0102000a],
+    ['\\', 0x00000008], ['Enter', 0x00000208], ['Up', 0x00010308], ['Down', 0x00020308],
+    ['Left', 0x00020408], ['Right', 0x00010408], ['CapsLock', 0x01000008], ['A', 0x01000208],
   ]);
   for (const [key, word] of fixtures) {
     const action = fnFactoryAction(key);
