@@ -13,6 +13,8 @@ export const HID_FILTERS: HIDDeviceFilter[] = [
   { vendorId: VID_WIRELESS, productId: PID_WIRELESS, usagePage: 0xff02, usage: 0x0002 },
 ];
 
+export type Progress = (done: number, total: number) => void;
+
 export type Block = 'keyMatrix' | 'ledConfig' | 'perKeyColors' | 'rgbTable' | 'macro';
 
 export interface Transport {
@@ -22,7 +24,10 @@ export interface Transport {
   write(block: Block, sub: number, data: Uint8Array): Promise<void>;
   /** Factory reset (USB cmd 0x11, 2.4G cmd 0x06; not acknowledged). */
   factoryReset(): Promise<void>;
-  writeMacroBank(data: Uint8Array): Promise<void>;
+  /** `onProgress(done, total)` counts packets (2.4G) or chunks (USB) written. */
+  writeMacroBank(data: Uint8Array, onProgress?: Progress): Promise<void>;
+  /** Full 4096-byte bank read; `onProgress(done, total)` counts pages/chunks. */
+  readMacroBank(onProgress?: Progress): Promise<Uint8Array>;
   dispose(): void;
 }
 
@@ -126,18 +131,23 @@ class WiredTransport implements Transport {
     return this.exclusive(() => this.writeData(block, sub, data));
   }
 
-  writeMacroBank(data: Uint8Array) {
+  writeMacroBank(data: Uint8Array, onProgress?: Progress) {
     if (data.length !== 4096) return Promise.reject(new Error('Macro bank must be 4096 bytes'));
-    return this.exclusive(() => this.writeData('macro', 0, data));
+    return this.exclusive(() => this.writeData('macro', 0, data, onProgress));
   }
 
-  private async writeData(block: Block, sub: number, data: Uint8Array) {
+  readMacroBank(onProgress?: Progress) {
+    return this.exclusive(() => this.readData('macro', 0, 4096, onProgress));
+  }
+
+  private async writeData(block: Block, sub: number, data: Uint8Array, onProgress?: Progress) {
     const cmd = WIRED_CMD[block];
     const total = Math.ceil(data.length / CHUNK);
     for (let i = 0; i < total; i++) {
       const chunk = data.subarray(i * CHUNK, (i + 1) * CHUNK);
       await sleep(20);
       await this.sendFeature(this.packet(cmd, sub, total, i, chunk.length, chunk));
+      onProgress?.(i + 1, total);
     }
   }
 
@@ -152,7 +162,7 @@ class WiredTransport implements Transport {
     return this.exclusive(() => this.readData(block, sub, len));
   }
 
-  private async readData(block: Block, sub: number, len: number) {
+  private async readData(block: Block, sub: number, len: number, onProgress?: Progress) {
     const cmd = WIRED_CMD[block] | 0x80;
     const total = Math.ceil(len / CHUNK);
     const out = new Uint8Array(len);
@@ -163,6 +173,7 @@ class WiredTransport implements Transport {
       await sleep(20);
       const view = await this.device.receiveFeatureReport(REPORT_ID);
       out.set(parseWiredReply(view, cmd, sub, total, i, size), i * CHUNK);
+      onProgress?.(i + 1, total);
     }
     return out;
   }
@@ -302,7 +313,7 @@ class WirelessTransport implements Transport {
     return this.exclusive(() => this.writeData(WIRELESS_CMD[block][0], sub, data));
   }
 
-  private async writeData(cmd: number, sub: number, data: Uint8Array) {
+  private async writeData(cmd: number, sub: number, data: Uint8Array, onPacket?: () => void) {
     const total = Math.ceil(data.length / W_DATA);
     if (!total || total > 127) throw new Error('Invalid wireless transaction size');
     this.queue = [];
@@ -316,16 +327,31 @@ class WirelessTransport implements Transport {
         if (res === 'ok') break;
         if (attempt >= 5) throw new Error(`2.4G write ${res} (cmd 0x${cmd.toString(16)}, packet ${i}). Upload may be partial.`);
       }
+      onPacket?.();
     }
   }
 
-  writeMacroBank(data: Uint8Array) {
+  writeMacroBank(data: Uint8Array, onProgress?: Progress) {
     if (data.length !== 4096) return Promise.reject(new Error('Macro bank must be 4096 bytes'));
     return this.exclusive(async () => {
+      const perPage = Math.ceil(512 / W_DATA);
+      const total = perPage * 8;
+      let done = 0;
       for (let page = 0; page < 8; page++) {
-        await this.writeData(0x03, page, data.subarray(page * 512, (page + 1) * 512));
+        await this.writeData(0x03, page, data.subarray(page * 512, (page + 1) * 512), () => onProgress?.(++done, total));
         await sleep(100);
       }
+    });
+  }
+
+  readMacroBank(onProgress?: Progress) {
+    return this.exclusive(async () => {
+      const bank = new Uint8Array(4096);
+      for (let page = 0; page < 8; page++) {
+        bank.set(await this.readData(0x43, page, 512, 512), page * 512);
+        onProgress?.(page + 1, 8);
+      }
+      return bank;
     });
   }
 
@@ -351,16 +377,12 @@ class WirelessTransport implements Transport {
   }
 
   read(block: Block, sub: number, len: number) {
+    if (block === 'macro') {
+      if (len !== 4096 || sub !== 0) return Promise.reject(new Error('Macro reads require the full 4096-byte bank'));
+      return this.readMacroBank();
+    }
     return this.exclusive(async () => {
       const cmd = WIRELESS_CMD[block][1];
-      if (block === 'macro') {
-        if (len !== 4096 || sub !== 0) throw new Error('Macro reads require the full 4096-byte bank');
-        const bank = new Uint8Array(4096);
-        for (let page = 0; page < 8; page++) {
-          bank.set(await this.readData(cmd, page, 512, 512), page * 512);
-        }
-        return bank;
-      }
       // Receiver streams only the physical matrix/planes and part of the
       // RGB block, not the USB allocation size. Only unused tail is padded.
       const minimum = block === 'keyMatrix' ? 126 * 4 : block === 'perKeyColors' ? 126 * 3 : block === 'rgbTable' ? 20 * 21 : len;

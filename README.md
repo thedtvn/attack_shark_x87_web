@@ -14,7 +14,7 @@ library and full protocol notes are in
 - **Per-key RGB**: paint keys on a picture of the keyboard (click, drag, select, eyedropper), quick selections (WASD, arrows, F-row…), then apply and switch to custom mode.
 - **Key remap**: 4 layers; keyboard keys with modifiers, media keys, mouse buttons, Fn, or disable. Changed keys are labelled, with save/discard.
 - **Settings**: Tap on/off and sensitivity, wireless sleep timeout, debounce (with an extended range beyond the vendor app's 5 stages), factory reset.
-- **Macros (experimental)**: automatically read the bank over USB, edit sequences in memory, then Save or Discard. Repeat settings are assigned in Key remap. See the safety notes below; playback has not yet been verified on hardware.
+- **Macros (experimental)**: read from the keyboard (USB or 2.4G), edit in memory, then Save (with progress bar) or Discard. Repeat settings are assigned in Key remap. See the safety notes below; playback has not yet been verified on hardware.
 - **Keyboard Appearance**: Choose between factory colorways or customize your own palette:
   - **Charcoal & Yellow** (Default black): Stealth dark chassis, medium slate alphas, deep modifiers, and vivid yellow accents.
   - **Retro Cream**: Warm vintage cream chassis, dark charcoal alphas, cream modifiers, and tan accents.
@@ -96,10 +96,11 @@ controller action only edits a draft; it never intentionally executes it.
 
 ## Experimental macros
 
-Macros use a shared 4096-byte keyboard bank. Uploading it is explicit and can
-change **every key referencing the same slots on any layer**. Opening Macros
-reads the keyboard's bank automatically over USB or experimental 2.4G pages. Edits exist only in memory;
-there is no local-draft persistence or fallback. Export a backup before saving.
+Macros use a shared 4096-byte keyboard bank. Saving rewrites the whole bank
+and changes **every key referencing the same slots on any layer**. The bank is
+read in the background after connecting (USB, or eight 512-byte pages over
+2.4G) and shared by Macros and Key remap. Edits exist only in memory; there is
+no local-draft persistence. Use **Export JSON** to keep a copy before saving.
 
 The UI/API support keyboard press/release, mouse buttons/movement/wheel,
 20-bit millisecond intervals, and counted or indefinite repeat bindings.
@@ -108,31 +109,26 @@ limit, not a measured firmware maximum. The two indefinite repeat modes are
 experimental. The protocol comes from Ghidra analysis, not an on-device macro
 playback test.
 
-- USB can import/read the bank and compares uploads with a full read-back.
-- 2.4G macro read/write uses eight tagged 512-byte pages (`43` read / `03`
-  write), confirmed in Ghidra and verified on hardware (write, byte-identical
-  read-back, restore). Playback is not yet validated. Over 2.4G a full bank
-  read takes ~1.5–2.5 s and a save ~15 s. The bank is prefetched in the
-  background after connecting and shared by Macros and Key remap.
-  Backup/read-back must complete or the operation fails.
+- **Save works like the vendor app** (`G5KB_ApplySetting`): it writes the bank
+  once, with a progress bar. Nothing is read first (the bank is overwritten
+  anyway) and nothing is read back afterwards: every packet is acknowledged
+  and retried by the transport. Over 2.4G a save takes about 10 s and a bank
+  read about 1.5–2.5 s. 2.4G write/read was verified on hardware once (write,
+  byte-identical read-back, restore). Playback is not yet validated.
+- Key bindings are not checked or changed by a save. Removing a slot shifts
+  later slots down, so keys bound to them play a different macro, and a key
+  bound past the end does nothing. Check those keys in Key remap.
+- The Macros page only edits/saves the bank; assign slots in **Key remap → Macro**.
+- JSON imports replace the in-memory editor after confirmation; they do not
+  write to the keyboard until **Save**. Invalid data is rejected.
+- Unsaved macro, keymap and per-key colour edits block app navigation and
+  focus/shake the **Discard / Save** bar. Browser close/reload uses the native
+  warning; leaving anyway loses edits.
+- **Discard** restores the last keyboard snapshot. Deleting every macro and
+  saving writes an empty bank.
+- Saving is not atomic: a disconnect can leave a partial bank. Save again to fix.
 - HID pacing uses Worker-based timers, so throttled/background tabs (and
   automation-driven windows) keep normal speed instead of ~1 s timer ticks.
-- Existing references on all layers are checked before upload. References to
-  slots missing in the replacement block the upload.
-- The Macros page only edits/uploads the bank; it never writes key bindings.
-  Upload first, then assign a slot exclusively in **Key remap → Macro**.
-- In the web editor, every upload first reads and saves the previous decoded bank
-  to browser storage. Read/storage failure aborts before writing. Use **Export
-  bank backup** to keep an external JSON copy; it does not include key bindings.
-- JSON imports replace the in-memory editor in file order after confirmation;
-  they do not write to the keyboard until **Save**. Invalid data is rejected.
-- Unsaved macro, keymap and per-key colour edits block app navigation and focus/
-  shake the **Discard / Save** bar. Browser close/reload uses the native warning;
-  leaving anyway loses edits. No unsaved changes are stored locally.
-- **Discard** restores the last keyboard snapshot. The last macro can be deleted
-  and the empty bank saved explicitly, but references on every layer must first
-  be removed in Key remap. Removing earlier slots shifts later slot numbers.
-- Uploads are not atomic; a disconnect may leave a partial bank. Keep backups.
 - Browser recording, if used, captures only events in the explicit recording
   area; the page cannot monitor keys system-wide like the native vendor app.
 

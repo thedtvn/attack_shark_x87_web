@@ -4,14 +4,12 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
-  Check,
   CheckCircle2,
   Copy,
   Download,
   Play,
   Plus,
   RotateCcw,
-  ShieldAlert,
   Square,
   Timer,
   Trash2,
@@ -34,7 +32,7 @@ import {
   validateMacroName,
 } from './macroDrafts';
 import type { Run } from './useBusy';
-import { MACRO_BANK_BACKUP_KEY, uploadMacroBank } from './macroUpload';
+import { uploadMacroBank, type SaveProgress } from './macroUpload';
 import { bankToEditor, macroBankSnapshot, changedMacroSlots } from './macroBankEditor';
 import { useUnsavedChanges } from './UnsavedChanges';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -61,10 +59,8 @@ export function MacroPanel({ kb, run }: Props) {
   const recordingContainerRef = useRef<HTMLDivElement>(null);
 
   // Dialog & status state
-  const [showConfirmUpload, setShowConfirmUpload] = useState<boolean>(false);
+  const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null);
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
-  const [wirelessAckConfirmed, setWirelessAckConfirmed] = useState<boolean>(false);
-  const [replacementConfirmed, setReplacementConfirmed] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<{ type: 'ok' | 'warn' | 'err'; message: string } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -358,50 +354,29 @@ export function MacroPanel({ kb, run }: Props) {
 
 
     setIsRecording(false);
-    setWirelessAckConfirmed(false);
-    setReplacementConfirmed(false);
-    setShowConfirmUpload(true);
+    void saveBank();
   };
 
-  const handleConfirmUpload = async () => {
-    if (!replacementConfirmed || (kb.connection !== 'wired' && !wirelessAckConfirmed)) return;
-    setShowConfirmUpload(false);
-
+  const saveBank = async () => {
     const definitions: MacroDefinition[] = drafts.map((d) => ({
       name: d.name,
       events: d.events,
     }));
+    const snapshot = drafts;
+    setSaveProgress({ percent: 0 });
+    setUploadStatus(null);
 
-    await run('Uploading macro bank to keyboard', async () => {
-      // 1. Upload macro bank with firmware preflight
-      let res: { verified: boolean };
+    await run('Saving macros', async () => {
       try {
-        res = await uploadMacroBank(kb, definitions, (previous) => {
-          const backup = JSON.stringify({
-            type: 'macro-drafts-export', version: 1, count: previous.length,
-            exportedAt: new Date().toISOString(),
-            drafts: previous.map((m) => ({ ...m, repeat: { mode: 'times', count: 1 } })),
-          });
-          localStorage.setItem(MACRO_BANK_BACKUP_KEY, backup);
-          if (localStorage.getItem(MACRO_BANK_BACKUP_KEY) !== backup) throw new Error('Could not persist the previous bank');
-        });
+        await uploadMacroBank(kb, definitions, setSaveProgress);
       } catch (e) {
         setUploadStatus({ type: 'err', message: e instanceof Error ? e.message : String(e) });
         throw e;
+      } finally {
+        setSaveProgress(null);
       }
-
-      setSavedBank(drafts);
-      if (res.verified) {
-        setUploadStatus({
-          type: 'ok',
-          message: `Verified: Bank with ${definitions.length} macros uploaded and verified with hardware. No key bindings were changed.`,
-        });
-      } else {
-        setUploadStatus({
-          type: 'warn',
-          message: `Bank with ${definitions.length} macros sent without a verified read-back. No key bindings were changed.`,
-        });
-      }
+      setSavedBank(snapshot);
+      setUploadStatus({ type: 'ok', message: `Saved ${definitions.length} macro${definitions.length === 1 ? '' : 's'} to the keyboard.` });
     });
   };
 
@@ -420,7 +395,7 @@ export function MacroPanel({ kb, run }: Props) {
 
   return (
     <div className="macro-container">
-      <p className="note"><strong>Experimental:</strong> Macro encoding is based on reverse engineering. Playback and indefinite repeat behavior have not been hardware-validated. Back up before replacing the shared bank.</p>
+      <p className="note"><strong>Experimental:</strong> Macro encoding is based on reverse engineering. Playback and indefinite repeat behavior have not been hardware-validated. Use Export JSON to keep a copy before saving.</p>
       {/* Hidden file input for JSON import */}
       <input type="file" ref={fileInputRef} accept=".json,application/json" style={{ display: 'none' }} onChange={handleImportJson} />
 
@@ -509,21 +484,11 @@ export function MacroPanel({ kb, run }: Props) {
                 <Upload size={13} /> Import
               </button>
             </div>
-            <button className="btn btn-sm" onClick={() => {
-              const backup = localStorage.getItem(MACRO_BANK_BACKUP_KEY);
-              if (!backup) { popup.alert('No automatic USB bank backup has been saved in this browser yet.'); return; }
-              const url = URL.createObjectURL(new Blob([backup], { type: 'application/json' }));
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = 'x87-macro-bank-backup.json';
-              a.click();
-              setTimeout(() => URL.revokeObjectURL(url), 1000);
-            }}><Download size={13} /> Export bank backup</button>
             <div className="macro-foot-note">
               {isWired ? (
-                <span className="text-ok">● USB connected: Direct bank read & verify supported</span>
+                <span className="text-ok">● USB connected</span>
               ) : (
-                <span className="text-warn">▲ 2.4G: bank read/verify supported; saving takes ~20 s, keep keyboard awake</span>
+                <span className="text-warn">▲ 2.4G: saving takes about 10 s — keep the keyboard awake</span>
               )}
             </div>
           </div>
@@ -831,7 +796,16 @@ export function MacroPanel({ kb, run }: Props) {
         </main>
       </div>
 
-      {(dirty || isRecording || pendingRename) && <div className="savebar" ref={barRef} tabIndex={-1} role="status" aria-live="polite">
+      {saveProgress ? (
+        <div className="savebar saving" ref={barRef} tabIndex={-1} role="status" aria-live="polite">
+          <span className="saving-label">Saving macros…</span>
+          <div className="save-progress" role="progressbar" aria-label="Saving macros"
+            aria-valuemin={0} aria-valuemax={100} aria-valuenow={saveProgress.percent}>
+            <div className="save-progress-fill" style={{ width: `${saveProgress.percent}%` }} />
+          </div>
+          <span className="saving-percent">{saveProgress.percent}%</span>
+        </div>
+      ) : (dirty || isRecording || pendingRename) && <div className="savebar" ref={barRef} tabIndex={-1} role="status" aria-live="polite">
         <span>{isRecording ? 'Recording — unsaved changes' : pendingRename ? 'Unsaved macro name — finish renaming first' : `${changedSlots} macro slot${changedSlots === 1 ? '' : 's'} changed`}</span>
         <span className="spacer" />
         <button className="btn" onClick={discard}><RotateCcw size={15} /> Discard</button>
@@ -841,91 +815,8 @@ export function MacroPanel({ kb, run }: Props) {
         title={`Delete “${drafts[deleteIndex].name}”?`} confirmLabel="Delete"
         onCancel={() => setDeleteIndex(null)} onConfirm={() => handleDeleteDraft(deleteIndex)}>
         <p>This removes slot {deleteIndex + 1} from the unsaved bank. The keyboard stays unchanged until Save.</p>
-        <p>Later slots shift down. Existing key bindings may then refer to a different macro. Saving is blocked if any layer references a slot removed from the bank.</p>
+        <p>Later slots shift down, so keys bound to later slots will play a different macro, and a key bound to a slot past the end will do nothing. Check those keys in Key remap.</p>
       </ConfirmDialog>}
-      {/* ================= CONFIRMATION MODAL ================= */}
-      {showConfirmUpload && (
-        <div className="macro-modal-backdrop" onClick={() => setShowConfirmUpload(false)}>
-          <div className="macro-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="macro-modal-head">
-              <div className="macro-modal-title-row">
-                <ShieldAlert size={22} className="text-accent" />
-                <h3>Save Macro Bank</h3>
-              </div>
-              <button className="icon-btn" onClick={() => setShowConfirmUpload(false)}>
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="macro-modal-body">
-              <div className="macro-modal-warning-box">
-                <AlertTriangle size={20} className="text-warn flex-shrink-0" />
-                <div>
-                  <strong>Shared Bank Replacement Notice:</strong>
-                  <p style={{ margin: '4px 0 0', lineHeight: 1.45 }}>
-                    Uploading replaces the keyboard's <strong>entire shared macro bank</strong> for all 4 layers (Default, FN1, FN2, Tap).
-                    Existing slot contents will be overwritten. Any key assigned to a modified slot on any layer will immediately execute the new macro.
-                  </p>
-                </div>
-              </div>
-
-              <div className="macro-modal-checklist">
-                <div className="macro-check-item">
-                  <Check size={16} className="text-ok" />
-                  <span>
-                    Bank size: <strong>{bankBytesUsed}</strong> / {MACRO_BANK_SIZE} bytes ({drafts.length} macros).
-                  </span>
-                </div>
-                <div className="macro-check-item">
-                  <Check size={16} className="text-ok" />
-                  <span>
-                    Preflight: All 4 matrix layers will be validated against macro slots before writing.
-                  </span>
-                </div>
-                <p className="note">No key bindings will be written. Assign macros separately in Key remap.</p>
-              </div>
-
-              <label className="macro-ack-checkbox">
-                <input type="checkbox" checked={replacementConfirmed} onChange={(e) => setReplacementConfirmed(e.target.checked)} />
-                <span>I authorize replacing the shared slots on all layers. Uploads are not atomic.</span>
-              </label>
-              <p className="note">The current decoded bank will be saved in this browser before upload. If reading or saving fails, upload stops. Key bindings are not included. Export the backup to keep a separate copy.</p>
-              {!isWired && (
-                <div className="macro-wireless-ack-box">
-                  <div className="macro-wireless-title">
-                    <AlertCircle size={16} className="text-danger" />
-                    <strong>Wireless 2.4G Connection Detected</strong>
-                  </div>
-                  <p className="note" style={{ margin: '4px 0 8px' }}>
-                    Wireless macro paging is experimental. Keep the keyboard awake and close other keyboard apps. Saving requires a backup read and a full byte-for-byte read-back comparison; a failed save can leave a partially changed bank.
-                  </p>
-                  <label className="macro-ack-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={wirelessAckConfirmed}
-                      onChange={(e) => setWirelessAckConfirmed(e.target.checked)}
-                    />
-                    <span>I understand and wish to proceed over 2.4G wireless</span>
-                  </label>
-                </div>
-              )}
-            </div>
-
-            <div className="macro-modal-footer">
-              <button className="btn" onClick={() => setShowConfirmUpload(false)}>
-                Cancel
-              </button>
-              <button
-                className="btn primary"
-                disabled={!replacementConfirmed || (!isWired && !wirelessAckConfirmed)}
-                onClick={handleConfirmUpload}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

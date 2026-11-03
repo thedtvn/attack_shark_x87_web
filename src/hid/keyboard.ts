@@ -1,5 +1,5 @@
 import { createTransport, isConfigDevice, HID_FILTERS, type Transport } from './transport';
-import { decodeMacroBank, encodeMacroBank, MACRO_BANK_SIZE, type MacroDefinition } from './macros';
+import { decodeMacroBank, encodeMacroBank, type MacroDefinition } from './macros';
 import {
   KeyMatrix,
   LAYERS,
@@ -170,35 +170,23 @@ export class X87 {
     return this.macroCache.then((bank) => structuredClone(bank));
   }
 
-  /** Fresh read: always queries the device (used for backups and verification). */
+  /** Fresh read: always queries the device. */
   async readMacroBank(): Promise<MacroDefinition[]> {
-    return decodeMacroBank(await this.read('macro', 0, MACRO_BANK_SIZE));
+    return decodeMacroBank(await this.t.readMacroBank());
   }
 
   /**
-   * Explicitly replace the shared bank, after checking references in all layers.
-   * This is not an atomic firmware transaction. Back up first. Existing slot
-   * numbers are preserved; replacing a slot changes every key referencing it.
+   * Replace the shared bank, as the vendor app does (G5KB_ApplySetting):
+   * encode and write it. Every packet is acknowledged and retried by the
+   * transport, so there is no extra read-back. Key bindings are not checked
+   * or changed; a key bound to a slot that no longer exists may play nothing
+   * or a different macro. `onProgress` receives 0..1. Not atomic.
    */
-  async replaceMacroBank(macros: MacroDefinition[], options: { allowEmpty?: boolean } = {}): Promise<{ verified: boolean }> {
-    if (!macros.length && !options.allowEmpty) throw new Error('Empty bank replacement requires explicit allowEmpty');
+  async writeMacroBank(macros: MacroDefinition[], onProgress?: (fraction: number) => void): Promise<void> {
     const bytes = encodeMacroBank(macros);
-    for (let layer = 0; layer < LAYERS; layer++) {
-      const matrix = await this.keyMatrix(layer);
-      for (let offset = 0; offset < matrix.bytes.length; offset += 4) {
-        if (matrix.bytes[offset] === 3 && matrix.bytes[offset + 3] >= macros.length) {
-          throw new Error(`Layer ${layer + 1} still references macro slot ${matrix.bytes[offset + 3] + 1}. Import/preserve the existing bank before replacing it.`);
-        }
-      }
-    }
-    this.macroCache = null; // Bank may be partially written from here on.
-    await this.t.writeMacroBank(bytes);
-    const actual = await this.read('macro', 0, MACRO_BANK_SIZE);
-    if (actual.length !== bytes.length || actual.some((b, i) => b !== bytes[i])) {
-      throw new Error('Macro bank verification failed. Do not assign a key; restore your backup.');
-    }
-    this.macroCache = Promise.resolve(decodeMacroBank(actual));
-    return { verified: true };
+    this.macroCache = null; // Bank may be partially written if this fails.
+    await this.t.writeMacroBank(bytes, onProgress && ((d, n) => onProgress(d / n)));
+    this.macroCache = Promise.resolve(structuredClone(macros));
   }
 
   /** Restore factory settings (lighting, key map, options). */

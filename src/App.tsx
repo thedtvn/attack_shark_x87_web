@@ -158,7 +158,7 @@ function AppContent() {
       )}
 
       <div className="toasts">
-        {busy && (
+        {busy && busy !== 'Saving macros' && (
           <div className="toast">
             <Loader2 size={16} className="spin" /> {busy}…
           </div>

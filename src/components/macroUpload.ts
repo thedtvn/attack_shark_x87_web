@@ -1,23 +1,30 @@
 import type { X87 } from '../hid/keyboard';
 import type { MacroDefinition } from '../hid/macros';
 
-export const MACRO_BANK_BACKUP_KEY = 'attack_shark_x87_macro_bank_backup_v1';
+/** Save progress as a 0..100 percentage of packets written. */
+export interface SaveProgress { percent: number }
 
-/** Bank-only operation. Key assignments belong exclusively to Key remap. */
+/**
+ * Bank-only operation, matching the vendor app: write the whole bank once.
+ * Key assignments belong exclusively to Key remap.
+ */
 export async function uploadMacroBank(
-  kb: Pick<X87, 'connection' | 'readMacroBank' | 'replaceMacroBank'>,
+  kb: Pick<X87, 'writeMacroBank'>,
   definitions: MacroDefinition[],
-  backup: (bank: MacroDefinition[]) => void,
-): Promise<{ verified: boolean }> {
+  onProgress?: (progress: SaveProgress) => void,
+): Promise<void> {
+  let last = -1;
+  const report = (fraction: number) => {
+    const percent = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+    if (percent <= last) return;
+    last = percent;
+    onProgress?.({ percent });
+  };
+  report(0);
   try {
-    const previous = await kb.readMacroBank();
-    backup(previous);
+    await kb.writeMacroBank(definitions, report);
   } catch (e) {
-    throw new Error(`Backup failed; no macro upload was attempted. ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Saving macros failed; the bank may be partially written. Save again to retry. ${e instanceof Error ? e.message : String(e)}`);
   }
-  try {
-    return await kb.replaceMacroBank(definitions, { allowEmpty: true });
-  } catch (e) {
-    throw new Error(`Bank replacement failed; no key bindings were written. The bank may be partially changed if writing started. ${e instanceof Error ? e.message : String(e)}`);
-  }
+  report(1);
 }
