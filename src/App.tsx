@@ -61,7 +61,7 @@ function AppContent() {
   // visible panel's first reads have been queued; panels later get the cache.
   useEffect(() => {
     if (!kb) return;
-    const timer = setTimeout(() => { kb.macroBank().catch(() => undefined); }, 1500);
+    const timer = setTimeout(() => { kb.getMacros().catch(() => undefined); }, 1500);
     return () => clearTimeout(timer);
   }, [kb]);
 

@@ -9,7 +9,7 @@ export interface SaveProgress { percent: number }
  * Key assignments belong exclusively to Key remap.
  */
 export async function uploadMacroBank(
-  kb: Pick<X87, 'writeMacroBank'>,
+  kb: Pick<X87, 'saveMacros'>,
   definitions: MacroDefinition[],
   onProgress?: (progress: SaveProgress) => void,
 ): Promise<void> {
@@ -22,7 +22,7 @@ export async function uploadMacroBank(
   };
   report(0);
   try {
-    await kb.writeMacroBank(definitions, report);
+    await kb.saveMacros(definitions, report);
   } catch (e) {
     throw new Error(`Saving macros failed; the bank may be partially written. Save again to retry. ${e instanceof Error ? e.message : String(e)}`);
   }

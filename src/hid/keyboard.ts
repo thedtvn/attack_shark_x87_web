@@ -157,36 +157,38 @@ export class X87 {
 
   private macroCache: Promise<MacroDefinition[]> | null = null;
 
+  // ---- macros: get / save / clear ------------------------------------------
+
   /**
-   * Cached bank, read once per connection (prefetched right after connect so
-   * opening Macros / Key remap is instant). Failures are not cached.
+   * Get the macro bank. Read once per connection and cached (prefetched after
+   * connect so Macros / Key remap open instantly); failures are not cached.
    */
-  macroBank(): Promise<MacroDefinition[]> {
+  getMacros(): Promise<MacroDefinition[]> {
     if (!this.macroCache) {
-      const pending = this.readMacroBank();
+      const pending = this.t.readMacroBank().then(decodeMacroBank);
       this.macroCache = pending;
       pending.catch(() => { if (this.macroCache === pending) this.macroCache = null; });
     }
     return this.macroCache.then((bank) => structuredClone(bank));
   }
 
-  /** Fresh read: always queries the device. */
-  async readMacroBank(): Promise<MacroDefinition[]> {
-    return decodeMacroBank(await this.t.readMacroBank());
-  }
-
   /**
-   * Replace the shared bank, as the vendor app does (G5KB_ApplySetting):
-   * encode and write it. Every packet is acknowledged and retried by the
-   * transport, so there is no extra read-back. Key bindings are not checked
-   * or changed; a key bound to a slot that no longer exists may play nothing
-   * or a different macro. `onProgress` receives 0..1. Not atomic.
+   * Save the whole shared bank, as the vendor app does (G5KB_ApplySetting):
+   * one write. Every packet is acknowledged and retried by the transport, so
+   * there is no read-back. Key bindings are not checked or changed; a key
+   * bound to a slot that no longer exists plays nothing or a different macro.
+   * `onProgress` (optional) receives 0..1. Not atomic.
    */
-  async writeMacroBank(macros: MacroDefinition[], onProgress?: (fraction: number) => void): Promise<void> {
+  async saveMacros(macros: MacroDefinition[], onProgress?: (fraction: number) => void): Promise<void> {
     const bytes = encodeMacroBank(macros);
     this.macroCache = null; // Bank may be partially written if this fails.
     await this.t.writeMacroBank(bytes, onProgress && ((d, n) => onProgress(d / n)));
     this.macroCache = Promise.resolve(structuredClone(macros));
+  }
+
+  /** Clear the bank (save an empty one). */
+  clearMacros(onProgress?: (fraction: number) => void): Promise<void> {
+    return this.saveMacros([], onProgress);
   }
 
   /** Restore factory settings (lighting, key map, options). */

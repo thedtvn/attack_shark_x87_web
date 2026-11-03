@@ -88,7 +88,7 @@ export function RemapPanel({ kb, run }: Props) {
   useEffect(() => {
     let active = true;
     // Names only: load in the background (shared cache), never lock the UI.
-    kb.macroBank()
+    kb.getMacros()
       .then((bank) => { if (active) setMacroBank(bank); })
       .catch((e) => { if (active) setMacroBankError(`Macro bank could not be read: ${e instanceof Error ? e.message : String(e)}`); });
     return () => { active = false; };
